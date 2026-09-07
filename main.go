@@ -37,6 +37,16 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		_, rawMessage, err := conn.ReadMessage()
 		if err != nil {
 			fmt.Println("Client ayrıldı", err)
+			msg := Message{
+				Type:    "peer-left",
+				Room:    currentRoom,
+				Payload: nil,
+			}
+			peerLeftPayload, marshalErr := json.Marshal(msg)
+			if marshalErr == nil {
+				broadcastToRoom(currentRoom, conn, peerLeftPayload)
+			}
+
 			removeFromRoom(currentRoom, conn)
 			break
 		}
@@ -49,11 +59,30 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 
 		if msg.Type == "join" {
 			currentRoom = msg.Room
-			mutex.Lock()
-			rooms[currentRoom] = append(rooms[currentRoom], conn)
-			mutex.Unlock()
-			fmt.Println("Client odaya katıldı", currentRoom)
-			continue
+			if len(rooms[currentRoom]) > 0 {
+				readyMessage := Message{
+					Type:    "ready",
+					Room:    currentRoom,
+					Payload: nil,
+				}
+				readyPayload, err := json.Marshal(readyMessage)
+				if err == nil {
+					_ = conn.WriteMessage(websocket.TextMessage, readyPayload)
+				}
+				mutex.Lock()
+				rooms[currentRoom] = append(rooms[currentRoom], conn)
+				mutex.Unlock()
+				fmt.Println("Client odaya katıldı", currentRoom)
+				continue
+			} else {
+
+				mutex.Lock()
+				rooms[currentRoom] = append(rooms[currentRoom], conn)
+				mutex.Unlock()
+				fmt.Println("Client odaya katıldı", currentRoom)
+				continue
+			}
+
 		}
 		broadcastToRoom(currentRoom, conn, rawMessage)
 	}
@@ -88,7 +117,7 @@ func removeFromRoom(room string, conn *websocket.Conn) {
 func main() {
 	fs := http.FileServer(http.Dir("./public"))
 	http.Handle("/", fs)
-	
+
 	http.HandleFunc("/ws", wsHandler)
 
 	fmt.Println("Sunucu 8080 portunda baslatılıyor...")
