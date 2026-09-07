@@ -60,6 +60,7 @@ ws.onmessage = async (event) => {
     }
     else if (msg.type === "room-full") {
         statusMessage.textContent = "Bu oda dolu (2 kişi sınırı). Lütfen farklı bir link kullanın.";
+        intentionalClose = true;
         ws.close();
     }
 
@@ -69,9 +70,13 @@ ws.onerror = (err) => {
     statusMessage.textContent = "Sunucuya bağlanamadı.Lütfen sunucunun çalıştığından emin olun."
 };
 
+let intentionalClose = false;
+
 ws.onclose = () => {
     console.log("Bağlantı kapandı");
-    statusMessage.textContent = "Sunucu bağlantısı kesildi."
+    if (!intentionalClose) {
+        statusMessage.textContent = "Sunucu bağlantısı kesildi.";
+    }
 };
 
 const peerConnection = new RTCPeerConnection({

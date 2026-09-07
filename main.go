@@ -32,24 +32,23 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 
 	var currentRoom string
+	joinedRoom := false
 
 	for {
 		_, rawMessage, err := conn.ReadMessage()
 		if err != nil {
 			fmt.Println("Client ayrıldı", err)
-			msg := Message{
-				Type:    "peer-left",
-				Room:    currentRoom,
-				Payload: nil,
+			if joinedRoom {
+				msg := Message{Type: "peer-left", Room: currentRoom, Payload: nil}
+				peerLeftPayload, marshalErr := json.Marshal(msg)
+				if marshalErr == nil {
+					broadcastToRoom(currentRoom, conn, peerLeftPayload)
+				}
+				removeFromRoom(currentRoom, conn)
 			}
-			peerLeftPayload, marshalErr := json.Marshal(msg)
-			if marshalErr == nil {
-				broadcastToRoom(currentRoom, conn, peerLeftPayload)
-			}
-
-			removeFromRoom(currentRoom, conn)
 			break
 		}
+
 		var msg Message
 		err = json.Unmarshal(rawMessage, &msg)
 		if err != nil {
@@ -82,6 +81,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			rooms[currentRoom] = append(rooms[currentRoom], conn)
+			joinedRoom = true
 			mutex.Unlock()
 			fmt.Println("Client odaya katıldı", currentRoom)
 			continue
