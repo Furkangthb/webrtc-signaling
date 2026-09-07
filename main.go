@@ -62,35 +62,28 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 
 			mutex.Lock()
 			roomSize := len(rooms[currentRoom])
+
 			if roomSize >= 2 {
-				fullMesage := Message{
-					Type:    "room-full",
-					Room:    currentRoom,
-					Payload: nil,
-				}
-				fullPayload, err := json.Marshal(fullMesage)
+				mutex.Unlock()
+				fullMessage := Message{Type: "room-full", Room: currentRoom, Payload: nil}
+				fullPayload, err := json.Marshal(fullMessage)
 				if err == nil {
 					conn.WriteMessage(websocket.TextMessage, fullPayload)
 				}
 				continue
-
 			}
+
 			if roomSize == 1 {
-				readyMesssage := Message{
-					Type:    "ready",
-					Room:    currentRoom,
-					Payload: nil,
-				}
-				readyPayload, err := json.Marshal(readyMesssage)
+				readyMessage := Message{Type: "ready", Room: currentRoom, Payload: nil}
+				readyPayload, err := json.Marshal(readyMessage)
 				if err == nil {
 					conn.WriteMessage(websocket.TextMessage, readyPayload)
 				}
 			}
 
-			mutex.Lock()
 			rooms[currentRoom] = append(rooms[currentRoom], conn)
 			mutex.Unlock()
-			fmt.Println("Client odaya katıldı:", currentRoom)
+			fmt.Println("Client odaya katıldı", currentRoom)
 			continue
 		}
 		broadcastToRoom(currentRoom, conn, rawMessage)
