@@ -3,11 +3,11 @@ const remoteVideo = document.getElementById("remoteVideo")
 const statusMessage = document.getElementById("statusMessage")
 
 const urlParams = new URLSearchParams(window.location.search)
-let roomID = urlParams.get("room")
+let roomId = urlParams.get("room")
 
-if (!roomID) {
-    roomID = crypto.randomUUID();
-    window.location.search = `?room=${roomID}`;
+if (!roomId) {
+    roomId = crypto.randomUUID();
+    window.location.search = `?room=${roomId}`;
 
 }
 
