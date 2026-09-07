@@ -4,8 +4,7 @@ const statusMessage=document.getElementById("statusMessage")
 
 
 const roomId = "oda1";
-const ws = new WebSocket("ws://localhost:8080/ws")
-
+const ws = new WebSocket("wss://webrtc-signaling-kjw9.onrender.com/ws")
 ws.onopen = () => {
     console.log("Signaling server \'a bağlanıldı");
     ws.send(JSON.stringify({ type: "join", room: roomId, payload: null }));
