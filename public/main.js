@@ -1,9 +1,16 @@
 const localVideo = document.getElementById("localVideo")
 const remoteVideo = document.getElementById("remoteVideo")
-const statusMessage=document.getElementById("statusMessage")
+const statusMessage = document.getElementById("statusMessage")
 
+const urlParams = new URLSearchParams(window.location.search)
+let roomID = urlParams.get("room")
 
-const roomId = "oda1";
+if (!roomID) {
+    roomID = crypto.randomUUID();
+    window.location.search = `?room=${roomID}`;
+
+}
+
 const ws = new WebSocket("wss://webrtc-signaling-kjw9.onrender.com/ws")
 ws.onopen = () => {
     console.log("Signaling server \'a bağlanıldı");
@@ -51,16 +58,20 @@ ws.onmessage = async (event) => {
         remoteVideo.srcObject = null;
         console.log("Karşı taraf ayrıldı");
     }
+    else if (msg.type === "room-full") {
+        statusMessage.textContent = "Bu oda dolu (2 kişi sınırı). Lütfen farklı bir link kullanın.";
+        ws.close();
+    }
 
 };
 ws.onerror = (err) => {
     console.error("WebSocket hatası:", err);
-    statusMessage.textContent="Sunucuya bağlanamadı.Lütfen sunucunun çalıştığından emin olun."
+    statusMessage.textContent = "Sunucuya bağlanamadı.Lütfen sunucunun çalıştığından emin olun."
 };
 
 ws.onclose = () => {
     console.log("Bağlantı kapandı");
-    statusMessage.textContent="Sunucu bağlantısı kesildi."
+    statusMessage.textContent = "Sunucu bağlantısı kesildi."
 };
 
 const peerConnection = new RTCPeerConnection({
@@ -113,7 +124,7 @@ async function startCamera() {
         console.log("Track'ler eklendi");
     } catch (err) {
         console.error("Kamerar erişim hatası:", err)
-        statusMessage.textContent="Kamera/mikrofon erişimi reddedildi.Lütfen izin verip sayfayı yenileyin.";
+        statusMessage.textContent = "Kamera/mikrofon erişimi reddedildi.Lütfen izin verip sayfayı yenileyin.";
     }
 }
 
