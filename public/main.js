@@ -1,6 +1,65 @@
 const localVideo = document.getElementById("localVideo")
 const remoteVideo = document.getElementById("remoteVideo")
 const statusMessage = document.getElementById("statusMessage")
+const qualityControl = document.getElementById("qualityControl")
+
+
+
+qualityControl.addEventListener("change", async (event) => {
+    const selectQuality = event.target.value;
+    let newQuality = {};
+    let targetWidth=640;
+    let targetHeight=480;
+    let targetBitrate=300*1000;
+
+
+
+    if (selectQuality === "480") {
+            targetWidth: 640;
+            targetHeight: 480;
+            targetBitrate:300*1000;
+        
+    }
+    else if (selectQuality === "720") {
+        
+            targetWidth: 1280;
+            targetHeight: 720;
+            targetBitrate:800*1000;
+        
+
+    }
+    else if (selectQuality === "1080") {
+        
+            targetWidth: 1920;
+            targetHeight: 1080;
+            targetBitrate:1500*1000;
+        
+    }
+    try {
+        const videoTrack=localVideo.srcObject.getVideoTracks()[0];
+        await videoTrack.applyConstraints({
+            width:{ideal:targetWidth},
+            height:{ideal:targetHeight}
+        });
+
+        const sender=peerConnection.getSenders();
+        const videoSender=sender.find(s=> s.track && s.track.kind=="video");
+        if (videoSender){
+            const parameters=videoSender.getParameters();
+            if(!parameters.encodings){
+                parameters.encodings=[{}]
+            }
+            parameters.encodings[0].maxBitrate=targetBitrate;
+            await videoSender.setParameters(parameters);
+
+    }
+    console.log("Video kalitesi:",selectQuality)
+    } catch (error) {
+        console.log("Kalite değistirme başarısız oldu:", error)
+        alert("Kameranız seçtiğiniz kaliteyi desteklemiyor olabilir.")
+
+    }
+})
 
 const urlParams = new URLSearchParams(window.location.search)
 let roomId = urlParams.get("room")
@@ -123,9 +182,18 @@ async function startCamera() {
 
         localVideo.srcObject = stream;
 
-        stream.getTracks().forEach((track) => {
-            peerConnection.addTrack(track, stream)
-        })
+        for (const track of stream.getTracks()) {
+            const sender = peerConnection.addTrack(track, stream)
+            if (track.kind === "video") {
+                const parameters = sender.getParameters();
+                if (!parameters.encodings) {
+                    parameters.encodings = [{}]
+
+                }
+                parameters.encodings[0].maxBitrate=500*1000
+                await sender.setParameters(parameters)
+            }
+        }
         console.log("Track'ler eklendi");
     } catch (err) {
         console.error("Kamerar erişim hatası:", err)
@@ -136,9 +204,9 @@ async function startCamera() {
 
 setInterval(async () => {
     if (peerConnection && peerConnection.iceConnectionState === "connected") {
-        
+
         const stats = await peerConnection.getStats();
-        
+
         stats.forEach(report => {
             if (report.type === 'candidate-pair' && report.state === 'succeeded') {
                 const ping = report.currentRoundTripTime * 1000;
@@ -158,6 +226,6 @@ setInterval(async () => {
             }
         });
     }
-}, 3000); 
+}, 3000);
 
 const cameraReady = startCamera();
