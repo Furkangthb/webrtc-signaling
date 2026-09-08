@@ -7,7 +7,7 @@ const qualityControl = document.getElementById("qualityControl")
 
 qualityControl.addEventListener("change", async (event) => {
     const selectQuality = event.target.value;
-    
+
     let targetWidth = 640;
     let targetHeight = 480;
     let targetBitrate = 300 * 1000;
@@ -32,15 +32,17 @@ qualityControl.addEventListener("change", async (event) => {
         const videoTrack = localVideo.srcObject.getVideoTracks()[0];
         await videoTrack.applyConstraints({
             width: { ideal: targetWidth },
-            height: { ideal: targetHeight }
+            height: { ideal: targetHeight },
+                resizeMode: "none"
+
         });
         console.log("Gerçek ayarlar:", videoTrack.getSettings());
 
         const senders = peerConnection.getSenders();
         const videoSender = senders.find(s => s.track && s.track.kind == "video");
 
-        
-        
+
+
         if (videoSender) {
             const parameters = videoSender.getParameters();
             if (!parameters.encodings) {
@@ -49,7 +51,7 @@ qualityControl.addEventListener("change", async (event) => {
             parameters.encodings[0].maxBitrate = targetBitrate;
             await videoSender.setParameters(parameters);
         }
-        
+
         console.log("Video kalitesi ayarlandı:", selectQuality);
 
     } catch (error) {
@@ -187,7 +189,7 @@ async function startCamera() {
                     parameters.encodings = [{}]
 
                 }
-                parameters.encodings[0].maxBitrate=500*1000
+                parameters.encodings[0].maxBitrate = 500 * 1000
                 await sender.setParameters(parameters)
             }
         }
