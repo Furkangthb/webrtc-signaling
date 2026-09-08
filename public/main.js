@@ -10,7 +10,7 @@ qualityControl.addEventListener("change", async (event) => {
     let newQuality = {};
     let targetWidth=640;
     let targetHeight=480;
-    let targetBitrate=300*1000;
+    let targetBitrate=30000*1000;
 
 
 
