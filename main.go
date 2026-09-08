@@ -58,6 +58,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 					broadcastToRoom(currentRoom, conn, peerLeftPayload)
 				}
 				removeFromRoom(currentRoom, conn)
+				joinedRoom = false
 			}
 			break
 		}
