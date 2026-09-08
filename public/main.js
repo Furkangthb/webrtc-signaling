@@ -2,8 +2,8 @@ const localVideo = document.getElementById("localVideo")
 const remoteVideo = document.getElementById("remoteVideo")
 const statusMessage = document.getElementById("statusMessage")
 const qualityControl = document.getElementById("qualityControl")
-
-
+const toggleMicBtn = document.getElementById("toggleMicBtn")
+const toggleVideoBtn = document.getElementById("toggleVideoBtn")
 
 qualityControl.addEventListener("change", async (event) => {
     const selectQuality = event.target.value;
@@ -32,8 +32,7 @@ qualityControl.addEventListener("change", async (event) => {
         const videoTrack = localVideo.srcObject.getVideoTracks()[0];
         await videoTrack.applyConstraints({
             width: { ideal: targetWidth },
-            height: { ideal: targetHeight },
-                resizeMode: "none"
+            height: { ideal: targetHeight }
 
         });
         console.log("Gerçek ayarlar:", videoTrack.getSettings());
@@ -59,6 +58,41 @@ qualityControl.addEventListener("change", async (event) => {
         alert("Kameranız seçtiğiniz kaliteyi desteklemiyor olabilir.");
     }
 });
+
+toggleVideoBtn.addEventListener("click", () => {
+    const stream = localVideo.srcObject;
+    if (stream) {
+        const videoTrack=stream.getVideoTracks()[0]
+        if (videoTrack){
+            videoTrack.enabled=!videoTrack.enabled
+            if (videoTrack.enabled){
+                toggleVideoBtn.textContent="Kamerayı kapat";
+                
+            }
+            else{
+                toggleVideoBtn.textContent="Kamerayı aç";
+
+            }
+        }
+    }
+})
+
+toggleMicBtn.addEventListener("click",()=>{
+    const stream=localVideo.srcObject;
+    if(stream){
+        const audioTrack=stream.getAudioTracks()[0]
+        if (audioTrack){
+            audioTrack.enabled=!audioTrack.enabled
+            if (audioTrack.enabled){
+                toggleMicBtn.textContent="Mikrofunu kapat";
+
+            }
+            else{
+                toggleMicBtn.textContent="Mikrofonu aç";
+            }
+        }
+    }
+})
 
 const urlParams = new URLSearchParams(window.location.search)
 let roomId = urlParams.get("room")
