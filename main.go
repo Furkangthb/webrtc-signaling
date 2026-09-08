@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -17,7 +18,19 @@ type Message struct {
 
 var upgrade = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		return true
+		origin := r.Header.Get("Origin")
+
+		if origin == "http://localhost:8080" {
+			return true
+		}
+
+		allowedOrigin := os.Getenv("ALLOWED_ORIGIN")
+		if allowedOrigin != "" && origin == allowedOrigin {
+			return true
+		}
+
+		fmt.Println("Reddedilen bağlantı denemesi (Origin):", origin)
+		return false
 	},
 }
 var rooms = make(map[string][]*websocket.Conn)

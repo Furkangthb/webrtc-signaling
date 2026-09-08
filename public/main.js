@@ -133,4 +133,31 @@ async function startCamera() {
     }
 }
 
+
+setInterval(async () => {
+    if (peerConnection && peerConnection.iceConnectionState === "connected") {
+        
+        const stats = await peerConnection.getStats();
+        
+        stats.forEach(report => {
+            if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+                const ping = report.currentRoundTripTime * 1000;
+                console.log(`📡 Anlık Ping: ${ping.toFixed(0)} ms`);
+            }
+
+            if (report.type === 'outbound-rtp' && report.kind === 'video') {
+                if (report.qualityLimitationReason && report.qualityLimitationReason !== "none") {
+                    console.warn(`⚠️ Video kalitesi düşürülüyor! Sebep: ${report.qualityLimitationReason}`);
+                }
+            }
+
+            if (report.type === 'inbound-rtp' && report.kind === 'video') {
+                if (report.packetsLost > 0) {
+                    console.error(`❌ Ağda ${report.packetsLost} adet video paketi kayboldu!`);
+                }
+            }
+        });
+    }
+}, 3000); 
+
 const cameraReady = startCamera();
