@@ -7,59 +7,57 @@ const qualityControl = document.getElementById("qualityControl")
 
 qualityControl.addEventListener("change", async (event) => {
     const selectQuality = event.target.value;
-    let newQuality = {};
-    let targetWidth=640;
-    let targetHeight=480;
-    let targetBitrate=300*1000;
-
-
+    
+    let targetWidth = 640;
+    let targetHeight = 480;
+    let targetBitrate = 300 * 1000;
 
     if (selectQuality === "480") {
-            targetWidth: 40;
-            targetHeight: 80;
-            targetBitrate:300*1000;
-        
+        targetWidth = 640;
+        targetHeight = 480;
+        targetBitrate = 300 * 1000;
     }
     else if (selectQuality === "720") {
-        
-            targetWidth: 1280;
-            targetHeight: 720;
-            targetBitrate:800*1000;
-        
-
+        targetWidth = 1280;
+        targetHeight = 720;
+        targetBitrate = 800 * 1000;
     }
     else if (selectQuality === "1080") {
-        
-            targetWidth: 19200;
-            targetHeight: 10800;
-            targetBitrate:1500*1000;
-        
+        targetWidth = 1920;
+        targetHeight = 1080;
+        targetBitrate = 1500 * 1000;
     }
+
     try {
-        const videoTrack=localVideo.srcObject.getVideoTracks()[0];
+        const videoTrack = localVideo.srcObject.getVideoTracks()[0];
         await videoTrack.applyConstraints({
-            width:{ideal:targetWidth},
-            height:{ideal:targetHeight}
+            width: { ideal: targetWidth },
+            height: { ideal: targetHeight }
         });
+        console.log("Gerçek ayarlar:", videoTrack.getSettings());
 
-        const sender=peerConnection.getSenders();
-        const videoSender=sender.find(s=> s.track && s.track.kind=="video");
-        if (videoSender){
-            const parameters=videoSender.getParameters();
-            if(!parameters.encodings){
-                parameters.encodings=[{}]
+        const senders = peerConnection.getSenders();
+        const videoSender = senders.find(s => s.track && s.track.kind == "video");
+
+        
+        
+        if (videoSender) {
+            const parameters = videoSender.getParameters();
+            if (!parameters.encodings) {
+                parameters.encodings = [{}];
             }
-            parameters.encodings[0].maxBitrate=targetBitrate;
+            parameters.encodings[0].maxBitrate = targetBitrate;
             await videoSender.setParameters(parameters);
+        }
+        
+        console.log("Video kalitesi ayarlandı:", selectQuality);
+        
 
-    }
-    console.log("Video kalitesi:",selectQuality)
     } catch (error) {
-        console.log("Kalite değistirme başarısız oldu:", error)
-        alert("Kameranız seçtiğiniz kaliteyi desteklemiyor olabilir.")
-
+        console.log("Kalite değistirme başarısız oldu:", error);
+        alert("Kameranız seçtiğiniz kaliteyi desteklemiyor olabilir.");
     }
-})
+});
 
 const urlParams = new URLSearchParams(window.location.search)
 let roomId = urlParams.get("room")
