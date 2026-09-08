@@ -10,13 +10,13 @@ qualityControl.addEventListener("change", async (event) => {
     let newQuality = {};
     let targetWidth=640;
     let targetHeight=480;
-    let targetBitrate=30000*1000;
+    let targetBitrate=300*1000;
 
 
 
     if (selectQuality === "480") {
-            targetWidth: 640;
-            targetHeight: 480;
+            targetWidth: 40;
+            targetHeight: 80;
             targetBitrate:300*1000;
         
     }
@@ -30,8 +30,8 @@ qualityControl.addEventListener("change", async (event) => {
     }
     else if (selectQuality === "1080") {
         
-            targetWidth: 1920;
-            targetHeight: 1080;
+            targetWidth: 19200;
+            targetHeight: 10800;
             targetBitrate:1500*1000;
         
     }
