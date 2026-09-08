@@ -51,7 +51,6 @@ qualityControl.addEventListener("change", async (event) => {
         }
         
         console.log("Video kalitesi ayarlandı:", selectQuality);
-        
 
     } catch (error) {
         console.log("Kalite değistirme başarısız oldu:", error);
