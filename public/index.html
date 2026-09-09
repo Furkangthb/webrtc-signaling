@@ -22,20 +22,29 @@
     <video id="localVideo" autoplay playsinline muted ></video>
 
     <div>
-        <button id="toggleVideoBtn">Kamera kapat</button>
-        <button id="toggleMicBtn">Mikrofonu kapat</button>
+        <button id="toggleVideoBtn">Kamera Aç</button>
+        <button id="toggleMicBtn">Mikrofonu Aç</button>
     </div>
-
+    <div>
+        <button id="toggleScreenBtn">Ekran Paylaş</button>
+    </div>
     <div>
         <label for="qualityControl">Video Kalitesi</label>
         <select name="" id="qualityControl">
-            <option value="seciniz">Seçiniz</option>
             <option value="480">480p</option>
             <option value="720">720p</option>
             <option value="1080">1080p(HD)</option>
         </select>
     </div>
+    <div>
+        <label for="remoteVolume">Karşı Taraf Ses Seviyesi</label>
+        <input type="range" id="remoteVolume" min="0" max="2" step="0.05" value="1">
+    </div>
 
+    <div>
+        <label for="localVolume">Ses Seviyesi</label>
+        <input type="range" id="localVolume" min="0" max="2" step="0.05" value="1">
+    </div>
     <h2>Karşı Tarafın Görüntüsü</h2>
     <video id="remoteVideo" autoplay playsinline></video>
 

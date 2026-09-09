@@ -1,0 +1,17 @@
+services:
+  webrtc-app:
+
+    image: golang:1.26-alpine
+    container_name: webrtc-sunucu
+    working_dir: /app
+    
+    volumes:
+      - .:/app
+    
+    ports:
+      - "8080:8080"
+      
+    command: >
+      sh -c "go install github.com/air-verse/air@latest && air"
+
+  

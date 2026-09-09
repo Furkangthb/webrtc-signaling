@@ -4,6 +4,22 @@ const statusMessage = document.getElementById("statusMessage")
 const qualityControl = document.getElementById("qualityControl")
 const toggleMicBtn = document.getElementById("toggleMicBtn")
 const toggleVideoBtn = document.getElementById("toggleVideoBtn")
+const remoteVolume = document.getElementById("remoteVolume")
+const localVolume = document.getElementById("localVolume")
+const toggleScreenBtn = document.getElementById("toggleScreenBtn")
+
+let localStream = null;
+
+
+const audioContext = new AudioContext();
+const gainNode = audioContext.createGain();
+gainNode.gain.value = 1;
+const remoteGainNode = audioContext.createGain();
+remoteGainNode.gain.value = 1;
+
+
+
+
 
 qualityControl.addEventListener("change", async (event) => {
     const selectQuality = event.target.value;
@@ -36,7 +52,7 @@ qualityControl.addEventListener("change", async (event) => {
 
         });
         console.log("Gerçek ayarlar:", videoTrack.getSettings());
-
+        console.log(videoTrack.getCapabilities());
         const senders = peerConnection.getSenders();
         const videoSender = senders.find(s => s.track && s.track.kind == "video");
 
@@ -62,37 +78,40 @@ qualityControl.addEventListener("change", async (event) => {
 toggleVideoBtn.addEventListener("click", () => {
     const stream = localVideo.srcObject;
     if (stream) {
-        const videoTrack=stream.getVideoTracks()[0]
-        if (videoTrack){
-            videoTrack.enabled=!videoTrack.enabled
-            if (videoTrack.enabled){
-                toggleVideoBtn.textContent="Kamerayı kapat";
-                
+        const videoTrack = stream.getVideoTracks()[0]
+        if (videoTrack) {
+            videoTrack.enabled = !videoTrack.enabled
+            if (videoTrack.enabled) {
+                toggleVideoBtn.textContent = "Kamerayı kapat";
+
             }
-            else{
-                toggleVideoBtn.textContent="Kamerayı aç";
+            else {
+                toggleVideoBtn.textContent = "Kamerayı aç";
 
             }
         }
     }
 })
 
-toggleMicBtn.addEventListener("click",()=>{
-    const stream=localVideo.srcObject;
-    if(stream){
-        const audioTrack=stream.getAudioTracks()[0]
-        if (audioTrack){
-            audioTrack.enabled=!audioTrack.enabled
-            if (audioTrack.enabled){
-                toggleMicBtn.textContent="Mikrofunu kapat";
+toggleMicBtn.addEventListener("click", () => {
+    const stream = localVideo.srcObject;
+    if (stream) {
+        const audioTrack = stream.getAudioTracks()[0]
+        if (audioTrack) {
+            audioTrack.enabled = !audioTrack.enabled
+            if (audioTrack.enabled) {
+                toggleMicBtn.textContent = "Mikrofunu kapat";
 
             }
-            else{
-                toggleMicBtn.textContent="Mikrofonu aç";
+            else {
+                toggleMicBtn.textContent = "Mikrofonu aç";
             }
         }
     }
 })
+
+
+
 
 const urlParams = new URLSearchParams(window.location.search)
 let roomId = urlParams.get("room")
@@ -108,7 +127,11 @@ ws.onopen = () => {
     console.log("Signaling server \'a bağlanıldı");
     ws.send(JSON.stringify({ type: "join", room: roomId, payload: null }));
 }
-
+window.addEventListener('beforeunload', function () {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+    }
+});
 
 
 ws.onmessage = async (event) => {
@@ -177,6 +200,9 @@ const peerConnection = new RTCPeerConnection({
     ]
 })
 
+
+
+
 peerConnection.onicecandidate = (event) => {
     console.log("onicecandidate tetiklendi, candidate:", event.candidate);
 
@@ -190,7 +216,11 @@ peerConnection.onicecandidate = (event) => {
 };
 
 peerConnection.ontrack = (event) => {
-    remoteVideo.srcObject = event.streams[0]
+    remoteVideo.srcObject = event.streams[0];
+
+    const remoteSource = audioContext.createMediaStreamSource(event.streams[0]);
+    remoteSource.connect(remoteGainNode)
+    remoteGainNode.connect(audioContext.destination)
 }
 
 async function createAndSendOffer() {
@@ -198,7 +228,7 @@ async function createAndSendOffer() {
 
     const offer = await peerConnection.createOffer();
     await peerConnection.setLocalDescription(offer);
-
+    console.log(peerConnection.localDescription.sdp);
     ws.send(JSON.stringify({
         type: "offer",
         room: roomId,
@@ -212,11 +242,19 @@ async function startCamera() {
             video: true,
             audio: true
         });
-
+        localStream = stream;
         localVideo.srcObject = stream;
 
+        const micSource = audioContext.createMediaStreamSource(stream);
+        const destination = audioContext.createMediaStreamDestination();
+        micSource.connect(gainNode);
+        gainNode.connect(destination);
+        const processAudioTrack = destination.stream.getAudioTracks()[0];
+
+
         for (const track of stream.getTracks()) {
-            const sender = peerConnection.addTrack(track, stream)
+            const trackToSend = track.kind === "audio" ? processAudioTrack : track;
+            const sender = peerConnection.addTrack(trackToSend, stream)
             if (track.kind === "video") {
                 const parameters = sender.getParameters();
                 if (!parameters.encodings) {
@@ -233,6 +271,64 @@ async function startCamera() {
         statusMessage.textContent = "Kamera/mikrofon erişimi reddedildi.Lütfen izin verip sayfayı yenileyin.";
     }
 }
+
+let isScreenSharing = false;
+let screenStream = null;
+
+
+toggleScreenBtn.addEventListener("click", async () => {
+    if (!isScreenSharing) {
+        await startScreenShare();
+    } else {
+        await stopScreenShare();
+    }
+})
+
+async function startScreenShare() {
+try {
+        screenStream = await navigator.mediaDevices.getDisplayMedia({ media: true })
+        const screenTrack = screenStream.getVideoTracks()[0];
+        const videoSender = peerConnection.getSenders().find(s => s.track && s.track.kind === "video")
+        if (videoSender) {
+            await videoSender.replaceTrack(screenTrack);
+        }
+        localVideo.srcObject = screenStream;
+        screenTrack.onended = () => {
+            stopScreenShare();
+
+        }
+        isScreenSharing = true;
+        toggleScreenBtn.textContent = "Paylaşımı durdur";
+
+    } catch (error) {
+        console.error("Ekran paylaşımı başlatılamadı:",error)
+    }
+}
+
+
+async function stopScreenShare(){
+    if(!isScreenSharing) return;
+
+    const cameraTrack =localStream.getVideoTracks()[0]
+    const videoSender=peerConnection.getSenders().find(
+        s=> s.track && s.track.kind==="video"
+    )
+
+    if (videoSender && cameraTrack) {
+        await videoSender.replaceTrack(cameraTrack);
+    }
+
+    if (screenStream) {
+        screenStream.getTracks().forEach(t => t.stop());
+        screenStream = null;
+    }
+
+    localVideo.srcObject = localStream;
+
+    isScreenSharing = false;
+    toggleScreenBtn.textContent = "Ekranı Paylaş";
+}
+
 
 
 setInterval(async () => {
@@ -260,5 +356,17 @@ setInterval(async () => {
         });
     }
 }, 3000);
+
+
+
+remoteVolume.addEventListener("input", (e) => {
+    remoteGainNode.value = parseFloat(e.target.value);
+})
+
+localVolume.addEventListener("input", (e) => {
+    gainNode.gain.value = parseFloat(e.target.value);
+})
+
+
 
 const cameraReady = startCamera();

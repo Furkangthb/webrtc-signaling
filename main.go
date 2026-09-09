@@ -138,5 +138,5 @@ func main() {
 
 	fmt.Println("Sunucu 8080 portunda baslatılıyor...")
 
-	http.ListenAndServe(":8080", nil)
+	http.ListenAndServe("0.0.0.0:8080", nil)
 }
