@@ -10,7 +10,6 @@ const toggleScreenBtn = document.getElementById("toggleScreenBtn")
 
 let localStream = null;
 
-
 const audioContext = new AudioContext();
 const gainNode = audioContext.createGain();
 gainNode.gain.value = 1;
@@ -18,8 +17,60 @@ const remoteGainNode = audioContext.createGain();
 remoteGainNode.gain.value = 1;
 
 
+let peerConnection; 
 
+async function initializeWebRTC() {
+    try {
+        const response = await fetch('/api/turn-credentials');
+        const data = await response.json();
 
+        let iceServers = [{ urls: "stun:furkanturn.duckdns.org:3478" }];
+
+        if (data.success) {
+            console.log("TURN bilgileri başarıyla alındı.");
+            iceServers.push({
+                urls: [
+                    "turn:furkanturn.duckdns.org:3478?transport=udp",
+                    "turn:furkanturn.duckdns.org:3478?transport=tcp",
+                    "turns:furkanturn.duckdns.org:5349?transport=tcp"
+                ],
+                username: data.username,
+                credential: data.credential
+            });
+        } else {
+            console.warn("TURN bilgileri alınamadı, sadece STUN ile devam ediliyor.");
+        }
+
+        peerConnection = new RTCPeerConnection({ iceServers: iceServers });
+
+        peerConnection.onicecandidate = (event) => {
+            console.log("onicecandidate tetiklendi, candidate:", event.candidate);
+            if (event.candidate) {
+                ws.send(JSON.stringify({
+                    type: "candidate",
+                    room: roomId,
+                    payload: event.candidate
+                }));
+            }
+        };
+
+        peerConnection.ontrack = (event) => {
+            remoteVideo.srcObject = event.streams[0];
+            const remoteSource = audioContext.createMediaStreamSource(event.streams[0]);
+            remoteSource.connect(remoteGainNode);
+            remoteGainNode.connect(audioContext.destination);
+        };
+
+        console.log("WebRTC bağlantısı (TURN dahil) başlatıldı.");
+
+    } catch (error) {
+        console.error("TURN sunucusu hazırlanamadı, STUN ile devam ediliyor:", error);
+        peerConnection = new RTCPeerConnection({ iceServers: [{ urls: "stun:furkanturn.duckdns.org:3478" }] });
+    }
+}
+
+const rtcReady = initializeWebRTC();
+// ==========================================
 
 qualityControl.addEventListener("change", async (event) => {
     const selectQuality = event.target.value;
@@ -49,14 +100,12 @@ qualityControl.addEventListener("change", async (event) => {
         await videoTrack.applyConstraints({
             width: { ideal: targetWidth },
             height: { ideal: targetHeight }
-
         });
         console.log("Gerçek ayarlar:", videoTrack.getSettings());
-        console.log(videoTrack.getCapabilities());
+        
+        await rtcReady; 
         const senders = peerConnection.getSenders();
         const videoSender = senders.find(s => s.track && s.track.kind == "video");
-
-
 
         if (videoSender) {
             const parameters = videoSender.getParameters();
@@ -83,11 +132,9 @@ toggleVideoBtn.addEventListener("click", () => {
             videoTrack.enabled = !videoTrack.enabled
             if (videoTrack.enabled) {
                 toggleVideoBtn.textContent = "Kamerayı kapat";
-
             }
             else {
                 toggleVideoBtn.textContent = "Kamerayı aç";
-
             }
         }
     }
@@ -101,7 +148,6 @@ toggleMicBtn.addEventListener("click", () => {
             audioTrack.enabled = !audioTrack.enabled
             if (audioTrack.enabled) {
                 toggleMicBtn.textContent = "Mikrofunu kapat";
-
             }
             else {
                 toggleMicBtn.textContent = "Mikrofonu aç";
@@ -110,16 +156,12 @@ toggleMicBtn.addEventListener("click", () => {
     }
 })
 
-
-
-
 const urlParams = new URLSearchParams(window.location.search)
 let roomId = urlParams.get("room")
 
 if (!roomId) {
     roomId = crypto.randomUUID();
     window.location.search = `?room=${roomId}`;
-
 }
 
 const ws = new WebSocket("wss://webrtc-signaling-kjw9.onrender.com/ws")
@@ -127,12 +169,12 @@ ws.onopen = () => {
     console.log("Signaling server \'a bağlanıldı");
     ws.send(JSON.stringify({ type: "join", room: roomId, payload: null }));
 }
+
 window.addEventListener('beforeunload', function () {
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.close();
     }
 });
-
 
 ws.onmessage = async (event) => {
     const msg = JSON.parse(event.data);
@@ -140,8 +182,9 @@ ws.onmessage = async (event) => {
 
     if (msg.type === "offer") {
         console.log("Offer işleniyor...");
+        await rtcReady;
+        
         await peerConnection.setRemoteDescription(msg.payload)
-
         const answer = await peerConnection.createAnswer();
         await peerConnection.setLocalDescription(answer);
 
@@ -151,24 +194,24 @@ ws.onmessage = async (event) => {
             payload: answer,
         }));
     } else if (msg.type === "answer") {
+        await rtcReady;
         await peerConnection.setRemoteDescription(msg.payload)
     } else if (msg.type === "candidate") {
         try {
-
+            await rtcReady;
             await peerConnection.addIceCandidate(msg.payload)
-            console.log("hata yok")
+            console.log("hata yok (candidate eklendi)")
         } catch (error) {
-            console.error("hata:catchin içinde")
+            console.error("hata: candidate eklenirken catch içine düştü", error)
         }
-
     }
     else if (msg.type === "ready") {
         console.log("Ready alındı, offer başlatılıyor");
-        await cameraReady
+        await cameraReady;
+        await rtcReady;    
         await createAndSendOffer();
         console.log("Offer gönderildi");
     }
-
     else if (msg.type === "peer-left") {
         remoteVideo.srcObject = null;
         console.log("Karşı taraf ayrıldı");
@@ -178,8 +221,8 @@ ws.onmessage = async (event) => {
         intentionalClose = true;
         ws.close();
     }
-
 };
+
 ws.onerror = (err) => {
     console.error("WebSocket hatası:", err);
     statusMessage.textContent = "Sunucuya bağlanamadı.Lütfen sunucunun çalıştığından emin olun."
@@ -194,41 +237,12 @@ ws.onclose = () => {
     }
 };
 
-const peerConnection = new RTCPeerConnection({
-    iceServers: [
-        { urls: "stun:stun.l.google.com:19302" }
-    ]
-})
-
-
-
-
-peerConnection.onicecandidate = (event) => {
-    console.log("onicecandidate tetiklendi, candidate:", event.candidate);
-
-    if (event.candidate) {
-        ws.send(JSON.stringify({
-            type: "candidate",
-            room: roomId,
-            payload: event.candidate
-        }));
-    }
-};
-
-peerConnection.ontrack = (event) => {
-    remoteVideo.srcObject = event.streams[0];
-
-    const remoteSource = audioContext.createMediaStreamSource(event.streams[0]);
-    remoteSource.connect(remoteGainNode)
-    remoteGainNode.connect(audioContext.destination)
-}
-
 async function createAndSendOffer() {
     console.log("createAndSendOffer çalışıyor, mevcut sender sayısı:", peerConnection.getSenders().length);
 
     const offer = await peerConnection.createOffer();
     await peerConnection.setLocalDescription(offer);
-    console.log(peerConnection.localDescription.sdp);
+    
     ws.send(JSON.stringify({
         type: "offer",
         room: roomId,
@@ -251,6 +265,7 @@ async function startCamera() {
         gainNode.connect(destination);
         const processAudioTrack = destination.stream.getAudioTracks()[0];
 
+        await rtcReady; 
 
         for (const track of stream.getTracks()) {
             const trackToSend = track.kind === "audio" ? processAudioTrack : track;
@@ -259,7 +274,6 @@ async function startCamera() {
                 const parameters = sender.getParameters();
                 if (!parameters.encodings) {
                     parameters.encodings = [{}]
-
                 }
                 parameters.encodings[0].maxBitrate = 500 * 1000
                 await sender.setParameters(parameters)
@@ -267,14 +281,15 @@ async function startCamera() {
         }
         console.log("Track'ler eklendi");
     } catch (err) {
-        console.error("Kamerar erişim hatası:", err)
+        console.error("Kamera erişim hatası:", err)
         statusMessage.textContent = "Kamera/mikrofon erişimi reddedildi.Lütfen izin verip sayfayı yenileyin.";
     }
 }
 
+const cameraReady = startCamera(); 
+
 let isScreenSharing = false;
 let screenStream = null;
-
 
 toggleScreenBtn.addEventListener("click", async () => {
     if (!isScreenSharing) {
@@ -285,9 +300,11 @@ toggleScreenBtn.addEventListener("click", async () => {
 })
 
 async function startScreenShare() {
-try {
+    try {
         screenStream = await navigator.mediaDevices.getDisplayMedia({ media: true })
         const screenTrack = screenStream.getVideoTracks()[0];
+        
+        await rtcReady;
         const videoSender = peerConnection.getSenders().find(s => s.track && s.track.kind === "video")
         if (videoSender) {
             await videoSender.replaceTrack(screenTrack);
@@ -295,7 +312,6 @@ try {
         localVideo.srcObject = screenStream;
         screenTrack.onended = () => {
             stopScreenShare();
-
         }
         isScreenSharing = true;
         toggleScreenBtn.textContent = "Paylaşımı durdur";
@@ -305,13 +321,14 @@ try {
     }
 }
 
-
 async function stopScreenShare(){
     if(!isScreenSharing) return;
 
-    const cameraTrack =localStream.getVideoTracks()[0]
-    const videoSender=peerConnection.getSenders().find(
-        s=> s.track && s.track.kind==="video"
+    const cameraTrack = localStream.getVideoTracks()[0]
+    
+    await rtcReady;
+    const videoSender = peerConnection.getSenders().find(
+        s => s.track && s.track.kind === "video"
     )
 
     if (videoSender && cameraTrack) {
@@ -329,17 +346,22 @@ async function stopScreenShare(){
     toggleScreenBtn.textContent = "Ekranı Paylaş";
 }
 
-
-
 setInterval(async () => {
     if (peerConnection && peerConnection.iceConnectionState === "connected") {
-
         const stats = await peerConnection.getStats();
 
         stats.forEach(report => {
-            if (report.type === 'candidate-pair' && report.state === 'succeeded') {
-                const ping = report.currentRoundTripTime * 1000;
-                console.log(`📡 Anlık Ping: ${ping.toFixed(0)} ms`);
+            if (report.type === 'candidate-pair' && report.state === 'succeeded' && report.nominated) {
+                
+                const localCandidate = stats.get(report.localCandidateId);
+                
+                if (localCandidate) {
+                    const type = localCandidate.candidateType;
+                    const connectionType = type === 'relay' ? 'TURN (Sunucu Üzerinden)' : 'STUN (Doğrudan P2P)';
+                    
+                    const ping = report.currentRoundTripTime * 1000;
+                    console.log(`📡 Bağlantı: ${connectionType} | Anlık Ping: ${ping.toFixed(0)} ms`);
+                }
             }
 
             if (report.type === 'outbound-rtp' && report.kind === 'video') {
@@ -357,16 +379,10 @@ setInterval(async () => {
     }
 }, 3000);
 
-
-
 remoteVolume.addEventListener("input", (e) => {
-    remoteGainNode.value = parseFloat(e.target.value);
+    remoteGainNode.gain.value = parseFloat(e.target.value);
 })
 
 localVolume.addEventListener("input", (e) => {
     gainNode.gain.value = parseFloat(e.target.value);
 })
-
-
-
-const cameraReady = startCamera();

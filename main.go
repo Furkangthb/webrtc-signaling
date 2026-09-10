@@ -1,11 +1,16 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha1"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -130,11 +135,46 @@ func removeFromRoom(room string, conn *websocket.Conn) {
 	}
 }
 
+func generateTurnCredentials(secret string, ttlSeconds int) (string, string) {
+	timestamp := time.Now().Unix() + int64(ttlSeconds)
+	username := strconv.FormatInt(timestamp, 10)
+
+	mac := hmac.New(sha1.New, []byte(secret))
+	mac.Write([]byte(username))
+	password := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	return username, password
+}
+
+func turnCredentialsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+
+	turnSecret := os.Getenv("TURN_SECRET")
+
+	if turnSecret == "" {
+		fmt.Println("HATA: TURN_SECRET ortam değişkeni bulunamadı!")
+		http.Error(w, "Sunucu yapılandırma hatası", http.StatusInternalServerError)
+		return
+	}
+
+	username, password := generateTurnCredentials(turnSecret, 86400)
+
+	response := map[string]interface{}{
+		"success":    true,
+		"username":   username,
+		"credential": password,
+	}
+
+	json.NewEncoder(w).Encode(response)
+}
+
 func main() {
 	fs := http.FileServer(http.Dir("./public"))
 	http.Handle("/", fs)
 
 	http.HandleFunc("/ws", wsHandler)
+	http.HandleFunc("/api/turn-credentials", turnCredentialsHandler)
 
 	fmt.Println("Sunucu 8080 portunda baslatılıyor...")
 
