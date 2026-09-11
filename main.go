@@ -25,7 +25,7 @@ var upgrade = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
 
-		if origin == "http://localhost:8080" {
+		if origin == "" || origin == "http://localhost:8080" || origin == "http://127.0.0.1:8080" {
 			return true
 		}
 
@@ -146,15 +146,65 @@ func generateTurnCredentials(secret string, ttlSeconds int) (string, string) {
 	return username, password
 }
 
+func recordHandler(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrade.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Println("Kayıt için Upgrade hatası:", err)
+		return
+	}
+	defer conn.Close()
+
+	os.MkdirAll("kayitlar", os.ModePerm)
+
+	fileName := fmt.Sprintf("kayitlar/gorusme_%d.webm", time.Now().Unix())
+
+	file, err := os.OpenFile(fileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Println("Dosya açılamadı:", err)
+		return
+	}
+	defer file.Close()
+
+	fmt.Println("🎥 Yeni kayıt akışı başladı. Dosya:", fileName)
+
+	for {
+		messageType, message, err := conn.ReadMessage()
+		if err != nil {
+			fmt.Println("Kayıt bağlantısı koptu veya tamamlandı:", err)
+			break
+		}
+
+		if messageType == websocket.BinaryMessage {
+			_, err := file.Write(message)
+			if err != nil {
+				fmt.Println("Dosyaya yazma hatası:", err)
+				break
+			}
+		}
+	}
+}
+
 func turnCredentialsHandler(w http.ResponseWriter, r *http.Request) {
+	origin := r.Header.Get("Origin")
+	allowedOrigin := os.Getenv("ALLOWED_ORIGIN")
+
+	if origin != "" && origin != "http://localhost:8080" && origin != "http://127.0.0.1:8080" {
+		if allowedOrigin == "" || origin != allowedOrigin {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"success": false, "error": "Yetkisiz origin"}`))
+			return
+		}
+	}
+
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
 
 	turnSecret := os.Getenv("TURN_SECRET")
-
 	if turnSecret == "" {
 		fmt.Println("HATA: TURN_SECRET ortam değişkeni bulunamadı!")
-		http.Error(w, "Sunucu yapılandırma hatası", http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"success": false, "error": "Sunucu yapılandırma hatası"}`))
 		return
 	}
 
@@ -175,6 +225,7 @@ func main() {
 
 	http.HandleFunc("/ws", wsHandler)
 	http.HandleFunc("/api/turn-credentials", turnCredentialsHandler)
+	http.HandleFunc("/api/record", recordHandler)
 
 	fmt.Println("Sunucu 8080 portunda baslatılıyor...")
 

@@ -7,6 +7,8 @@ const toggleVideoBtn = document.getElementById("toggleVideoBtn")
 const remoteVolume = document.getElementById("remoteVolume")
 const localVolume = document.getElementById("localVolume")
 const toggleScreenBtn = document.getElementById("toggleScreenBtn")
+const toggleRecordBtn = document.getElementById("toggleRecordBtn");
+
 
 let localStream = null;
 
@@ -344,6 +346,118 @@ async function stopScreenShare(){
 
     isScreenSharing = false;
     toggleScreenBtn.textContent = "Ekranı Paylaş";
+}
+
+let mediaRecorder;
+let recordWs;
+let isRecording = false;
+
+const recordWsUrl = "wss://furkanturn.duckdns.org/api/record";
+
+function startLiveRecording(stream) {
+    recordWs = new WebSocket(recordWsUrl);
+    
+    recordWs.onopen = () => {
+        console.log("Kayıt sunucusuna bağlanıldı.");
+        
+        const options = { mimeType: 'video/webm; codecs=vp9' };
+        mediaRecorder = new MediaRecorder(stream, options);
+
+        mediaRecorder.ondataavailable = (event) => {
+            if (event.data.size > 0 && recordWs.readyState === WebSocket.OPEN) {
+                recordWs.send(event.data);
+            }
+        };
+
+        mediaRecorder.start(2000); 
+        
+        isRecording = true;
+        if(toggleRecordBtn) toggleRecordBtn.textContent = "Kaydı Durdur";
+    };
+    
+    recordWs.onerror = (err) => console.error("Kayıt WS hatası:", err);
+}
+
+function stopLiveRecording() {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+        mediaRecorder.stop();
+    }
+    if (recordWs) {
+        recordWs.close();
+    }
+    isRecording = false;
+    if(toggleRecordBtn) toggleRecordBtn.textContent = "Kaydı Başlat";
+}
+
+function createMergedStream(localStream, remoteStream) {
+   
+    const mixerContext = new (window.AudioContext || window.webkitAudioContext)();
+    
+    const audioDestination = mixerContext.createMediaStreamDestination();
+
+    if (localStream && localStream.getAudioTracks().length > 0) {
+        const localAudioSource = mixerContext.createMediaStreamSource(localStream);
+        localAudioSource.connect(audioDestination);
+    }
+
+    if (remoteStream && remoteStream.getAudioTracks().length > 0) {
+        const remoteAudioSource = mixerContext.createMediaStreamSource(remoteStream);
+        remoteAudioSource.connect(audioDestination);
+    }
+
+    const mergedAudioTrack = audioDestination.stream.getAudioTracks()[0];
+
+
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+
+    canvas.width = 1280; 
+    canvas.height = 480;
+
+    function drawFrames() {
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        if (localVideo && localVideo.readyState >= 2) {
+            ctx.drawImage(localVideo, 0, 0, 640, 480);
+        }
+
+        if (remoteVideo && remoteVideo.readyState >= 2) {
+            ctx.drawImage(remoteVideo, 640, 0, 640, 480);
+        }
+
+        requestAnimationFrame(drawFrames);
+    }
+    
+    drawFrames();
+
+    const canvasStream = canvas.captureStream(30);
+    const mergedVideoTrack = canvasStream.getVideoTracks()[0];
+
+
+    
+    return new MediaStream([mergedVideoTrack, mergedAudioTrack]);
+}
+
+if (toggleRecordBtn) {
+    toggleRecordBtn.addEventListener("click", () => {
+        if (!isRecording) {
+            const remoteStream = remoteVideo.srcObject;
+            let streamToRecord;
+
+            if (remoteStream) {
+                console.log("İki taraf da birleştirilerek kaydediliyor...");
+                streamToRecord = createMergedStream(localVideo.srcObject, remoteStream);
+            } else {
+                console.log("Sadece yerel kamera kaydediliyor...");
+                streamToRecord = localVideo.srcObject;
+            }
+
+            startLiveRecording(streamToRecord);
+        } else {
+            stopLiveRecording();
+        }
+    });
 }
 
 setInterval(async () => {
