@@ -36,7 +36,7 @@ var upgrade = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
 
-		if origin == "" || origin == "http://localhost:8080" || origin == "http://127.0.0.1:8080" {
+		if origin == "" || origin == "http://localhost:8080" || origin == "http://127.0.0.1:8080" || origin == "https://webrtc-signaling-kjw9.onrender.com" {
 			return true
 		}
 
