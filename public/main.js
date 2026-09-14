@@ -7,8 +7,14 @@ const toggleVideoBtn = document.getElementById("toggleVideoBtn")
 const remoteVolume = document.getElementById("remoteVolume")
 const localVolume = document.getElementById("localVolume")
 const toggleScreenBtn = document.getElementById("toggleScreenBtn")
-const toggleRecordBtn = document.getElementById("toggleRecordBtn");
+const toggleRecordBtn = document.getElementById("toggleRecordBtn")
+const chatMessages = document.getElementById("chatMessages")
+const chatInput = document.getElementById("chatInput")
+const sendChatBtn = document.getElementById("sendChatBtn")
 
+const chatFileInput = document.getElementById("chatFileInput")
+const attachFileBtn = document.getElementById("attachFileBtn")
+const typingIndicator = document.getElementById("typingIndicator")
 
 let localStream = null;
 
@@ -19,7 +25,7 @@ const remoteGainNode = audioContext.createGain();
 remoteGainNode.gain.value = 1;
 
 
-let peerConnection; 
+let peerConnection;
 
 async function initializeWebRTC() {
     try {
@@ -72,7 +78,6 @@ async function initializeWebRTC() {
 }
 
 const rtcReady = initializeWebRTC();
-// ==========================================
 
 qualityControl.addEventListener("change", async (event) => {
     const selectQuality = event.target.value;
@@ -104,8 +109,8 @@ qualityControl.addEventListener("change", async (event) => {
             height: { ideal: targetHeight }
         });
         console.log("Gerçek ayarlar:", videoTrack.getSettings());
-        
-        await rtcReady; 
+
+        await rtcReady;
         const senders = peerConnection.getSenders();
         const videoSender = senders.find(s => s.track && s.track.kind == "video");
 
@@ -160,14 +165,14 @@ toggleMicBtn.addEventListener("click", () => {
 
 const urlParams = new URLSearchParams(window.location.search)
 let roomId = urlParams.get("room")
+let myName = urlParams.get("name") || "Misafir"
 
 if (!roomId) {
-    roomId = crypto.randomUUID();
-    window.location.search = `?room=${roomId}`;
+    window.location.href = "/";
 }
 
-const ws = new WebSocket("wss://webrtc-signaling-kjw9.onrender.com/ws")
-ws.onopen = () => {
+const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => {
     console.log("Signaling server \'a bağlanıldı");
     ws.send(JSON.stringify({ type: "join", room: roomId, payload: null }));
 }
@@ -185,7 +190,7 @@ ws.onmessage = async (event) => {
     if (msg.type === "offer") {
         console.log("Offer işleniyor...");
         await rtcReady;
-        
+
         await peerConnection.setRemoteDescription(msg.payload)
         const answer = await peerConnection.createAnswer();
         await peerConnection.setLocalDescription(answer);
@@ -210,7 +215,7 @@ ws.onmessage = async (event) => {
     else if (msg.type === "ready") {
         console.log("Ready alındı, offer başlatılıyor");
         await cameraReady;
-        await rtcReady;    
+        await rtcReady;
         await createAndSendOffer();
         console.log("Offer gönderildi");
     }
@@ -222,6 +227,16 @@ ws.onmessage = async (event) => {
         statusMessage.textContent = "Bu oda dolu (2 kişi sınırı). Lütfen farklı bir link kullanın.";
         intentionalClose = true;
         ws.close();
+    }
+    else if (msg.type === "chat") {
+        appendChatMessage(msg.payload, false);
+    }
+    else if (msg.type === "typing") {
+        typingIndicator.textContent = `${msg.payload.name} yazıyor...`;
+        clearTimeout(typingClearTimeout);
+        typingClearTimeout = setTimeout(() => {
+            typingIndicator.textContent = "";
+        }, 3000);
     }
 };
 
@@ -244,7 +259,7 @@ async function createAndSendOffer() {
 
     const offer = await peerConnection.createOffer();
     await peerConnection.setLocalDescription(offer);
-    
+
     ws.send(JSON.stringify({
         type: "offer",
         room: roomId,
@@ -267,7 +282,7 @@ async function startCamera() {
         gainNode.connect(destination);
         const processAudioTrack = destination.stream.getAudioTracks()[0];
 
-        await rtcReady; 
+        await rtcReady;
 
         for (const track of stream.getTracks()) {
             const trackToSend = track.kind === "audio" ? processAudioTrack : track;
@@ -288,7 +303,7 @@ async function startCamera() {
     }
 }
 
-const cameraReady = startCamera(); 
+const cameraReady = startCamera();
 
 let isScreenSharing = false;
 let screenStream = null;
@@ -305,7 +320,7 @@ async function startScreenShare() {
     try {
         screenStream = await navigator.mediaDevices.getDisplayMedia({ media: true })
         const screenTrack = screenStream.getVideoTracks()[0];
-        
+
         await rtcReady;
         const videoSender = peerConnection.getSenders().find(s => s.track && s.track.kind === "video")
         if (videoSender) {
@@ -319,15 +334,15 @@ async function startScreenShare() {
         toggleScreenBtn.textContent = "Paylaşımı durdur";
 
     } catch (error) {
-        console.error("Ekran paylaşımı başlatılamadı:",error)
+        console.error("Ekran paylaşımı başlatılamadı:", error)
     }
 }
 
-async function stopScreenShare(){
-    if(!isScreenSharing) return;
+async function stopScreenShare() {
+    if (!isScreenSharing) return;
 
     const cameraTrack = localStream.getVideoTracks()[0]
-    
+
     await rtcReady;
     const videoSender = peerConnection.getSenders().find(
         s => s.track && s.track.kind === "video"
@@ -354,12 +369,14 @@ let isRecording = false;
 
 const recordWsUrl = "wss://furkanturn.duckdns.org/api/record";
 
-function startLiveRecording(stream) {
-    recordWs = new WebSocket(recordWsUrl);
-    
+async function startLiveRecording(stream) {
+    const res = await fetch(`/api/record-token?room=${encodeURIComponent(roomId)}`);
+    const { token } = await res.json();
+    recordWs = new WebSocket(`wss://furkanturn.duckdns.org/api/record?token=${encodeURIComponent(token)}`);
+
     recordWs.onopen = () => {
         console.log("Kayıt sunucusuna bağlanıldı.");
-        
+
         const options = { mimeType: 'video/webm; codecs=vp9' };
         mediaRecorder = new MediaRecorder(stream, options);
 
@@ -369,12 +386,12 @@ function startLiveRecording(stream) {
             }
         };
 
-        mediaRecorder.start(2000); 
-        
+        mediaRecorder.start(2000);
+
         isRecording = true;
-        if(toggleRecordBtn) toggleRecordBtn.textContent = "Kaydı Durdur";
+        if (toggleRecordBtn) toggleRecordBtn.textContent = "Kaydı Durdur";
     };
-    
+
     recordWs.onerror = (err) => console.error("Kayıt WS hatası:", err);
 }
 
@@ -386,13 +403,13 @@ function stopLiveRecording() {
         recordWs.close();
     }
     isRecording = false;
-    if(toggleRecordBtn) toggleRecordBtn.textContent = "Kaydı Başlat";
+    if (toggleRecordBtn) toggleRecordBtn.textContent = "Kaydı Başlat";
 }
 
 function createMergedStream(localStream, remoteStream) {
-   
+
     const mixerContext = new (window.AudioContext || window.webkitAudioContext)();
-    
+
     const audioDestination = mixerContext.createMediaStreamDestination();
 
     if (localStream && localStream.getAudioTracks().length > 0) {
@@ -411,7 +428,7 @@ function createMergedStream(localStream, remoteStream) {
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d");
 
-    canvas.width = 1280; 
+    canvas.width = 1280;
     canvas.height = 480;
 
     function drawFrames() {
@@ -428,14 +445,14 @@ function createMergedStream(localStream, remoteStream) {
 
         requestAnimationFrame(drawFrames);
     }
-    
+
     drawFrames();
 
     const canvasStream = canvas.captureStream(30);
     const mergedVideoTrack = canvasStream.getVideoTracks()[0];
 
 
-    
+
     return new MediaStream([mergedVideoTrack, mergedAudioTrack]);
 }
 
@@ -460,19 +477,168 @@ if (toggleRecordBtn) {
     });
 }
 
+
+function formatTime() {
+    return new Date().toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+}
+
+function appendChatMessage(payload, isLocal) {
+    const wrapper = document.createElement("div");
+    wrapper.style.margin = "6px 0";
+
+    const header = document.createElement("div");
+    header.style.fontSize = "11px";
+    header.style.color = "#888";
+    header.textContent = `${isLocal ? "Sen" : payload.name} • ${formatTime()}`;
+    wrapper.appendChild(header);
+
+    if (payload.kind === "file") {
+        if (payload.fileType && payload.fileType.startsWith("image/")) {
+            const img = document.createElement("img");
+            img.src = payload.fileUrl;
+            img.style.maxWidth = "160px";
+            img.style.maxHeight = "160px";
+            img.style.display = "block";
+            img.style.cursor = "pointer";
+            img.style.borderRadius = "4px";
+            img.addEventListener("click", () => window.open(payload.fileUrl, "_blank"));
+            wrapper.appendChild(img);
+        } else {
+            const link = document.createElement("a");
+            link.href = payload.fileUrl;
+            link.textContent = "📎 " + payload.fileName;
+            link.target = "_blank";
+            wrapper.appendChild(link);
+        }
+    } else {
+        const textEl = document.createElement("div");
+        textEl.textContent = payload.text;
+        if (isLocal) textEl.style.color = "#555";
+        wrapper.appendChild(textEl);
+    }
+
+    chatMessages.appendChild(wrapper);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function sendChatMessage() {
+    const text = chatInput.value.trim();
+    if (!text) return;
+
+    if (ws.readyState !== WebSocket.OPEN) {
+        console.warn("WebSocket bağlı değil, mesaj gönderilemedi.");
+        return;
+    }
+
+    const payload = { kind: "text", text: text, name: myName };
+
+    ws.send(JSON.stringify({
+        type: "chat",
+        room: roomId,
+        payload: payload
+    }));
+
+    appendChatMessage(payload, true);
+    chatInput.value = "";
+}
+
+sendChatBtn.addEventListener("click", sendChatMessage);
+
+chatInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+        sendChatMessage();
+    }
+});
+
+attachFileBtn.addEventListener("click", () => {
+    chatFileInput.click();
+});
+
+chatFileInput.addEventListener("change", async () => {
+    const file = chatFileInput.files[0];
+    if (!file) return;
+
+    if (file.size > 25 * 1024 * 1024) {
+        alert("Dosya 25 MB sınırını aşıyor.");
+        chatFileInput.value = "";
+        return;
+    }
+
+    try {
+        const tokenRes = await fetch(`/api/record-token?room=${encodeURIComponent(roomId)}`);
+        const { token } = await tokenRes.json();
+
+        const formData = new FormData();
+        formData.append("file", file);
+
+        const res = await fetch(`https://furkanturn.duckdns.org/api/upload?token=${encodeURIComponent(token)}`, {
+            method: "POST",
+            body: formData
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+            alert(data.error || "Dosya yüklenemedi.");
+            return;
+        }
+
+        const fullFileUrl = `https://furkanturn.duckdns.org${data.url}`;
+
+        const payload = {
+            kind: "file",
+            fileUrl: fullFileUrl,
+            fileName: data.fileName,
+            fileType: data.fileType,
+            name: myName
+        };
+
+        ws.send(JSON.stringify({
+            type: "chat",
+            room: roomId,
+            payload: payload
+        }));
+
+        appendChatMessage(payload, true);
+    } catch (err) {
+        console.error("Dosya yükleme hatası:", err);
+        alert("Dosya yüklenirken bir hata oluştu.");
+    } finally {
+        chatFileInput.value = "";
+    }
+});
+
+let typingSendTimeout = null;
+let typingClearTimeout = null;
+
+chatInput.addEventListener("input", () => {
+    if (typingSendTimeout) return;
+
+    if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: "typing",
+            room: roomId,
+            payload: { name: myName }
+        }));
+    }
+
+    typingSendTimeout = setTimeout(() => {
+        typingSendTimeout = null;
+    }, 1500);
+});
+
 setInterval(async () => {
     if (peerConnection && peerConnection.iceConnectionState === "connected") {
         const stats = await peerConnection.getStats();
 
         stats.forEach(report => {
             if (report.type === 'candidate-pair' && report.state === 'succeeded' && report.nominated) {
-                
+
                 const localCandidate = stats.get(report.localCandidateId);
-                
+
                 if (localCandidate) {
                     const type = localCandidate.candidateType;
                     const connectionType = type === 'relay' ? 'TURN (Sunucu Üzerinden)' : 'STUN (Doğrudan P2P)';
-                    
+
                     const ping = report.currentRoundTripTime * 1000;
                     console.log(`📡 Bağlantı: ${connectionType} | Anlık Ping: ${ping.toFixed(0)} ms`);
                 }
