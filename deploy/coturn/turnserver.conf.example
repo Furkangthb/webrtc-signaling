@@ -1,0 +1,33 @@
+# Canlı secret buraya yazılmaz. Production'da /etc/turnserver.conf kullanılır.
+# static-auth-secret, uygulamanın TURN_SECRET değeri ile aynı olmalıdır.
+
+listening-port=3478
+tls-listening-port=5349
+listening-ip=0.0.0.0
+# Oracle VNIC: public/private NAT eşlemesi
+# external-ip=PUBLIC_IP/PRIVATE_IP
+# relay-ip=PRIVATE_IP
+
+min-port=49152
+max-port=65535
+
+use-auth-secret
+static-auth-secret=CHANGE_ME
+realm=furkanturn.duckdns.org
+
+cert=/etc/letsencrypt/live/furkanturn.duckdns.org/fullchain.pem
+pkey=/etc/letsencrypt/live/furkanturn.duckdns.org/privkey.pem
+
+no-multicast-peers
+no-cli
+fingerprint
+lt-cred-mech
+stale-nonce=600
+no-loopback-peers
+no-tcp-relay
+
+total-quota=100
+max-bps=1000000
+
+log-file=/var/log/turnserver.log
+simple-log

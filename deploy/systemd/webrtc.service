@@ -1,0 +1,19 @@
+[Unit]
+Description=WebRTC signaling server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/webrtc-signaling
+EnvironmentFile=-/home/ubuntu/webrtc-signaling/.env
+ExecStart=/home/ubuntu/webrtc-signaling/webrtc-app
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

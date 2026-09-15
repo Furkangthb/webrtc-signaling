@@ -17,6 +17,7 @@ const attachFileBtn = document.getElementById("attachFileBtn")
 const typingIndicator = document.getElementById("typingIndicator")
 
 let localStream = null;
+let videoSender = null; // Kameraya ait RTCRtpSender referansı - kapat/aç sırasında kullanılıyor
 
 const audioContext = new AudioContext();
 const gainNode = audioContext.createGain();
@@ -32,24 +33,17 @@ async function initializeWebRTC() {
         const response = await fetch('/api/turn-credentials');
         const data = await response.json();
 
-        let iceServers = [{ urls: "stun:furkanturn.duckdns.org:3478" }];
-
+        const iceServers = Array.isArray(data.iceServers) ? data.iceServers : [];
         if (data.success) {
             console.log("TURN bilgileri başarıyla alındı.");
-            iceServers.push({
-                urls: [
-                    "turn:furkanturn.duckdns.org:3478?transport=udp",
-                    "turn:furkanturn.duckdns.org:3478?transport=tcp",
-                    "turns:furkanturn.duckdns.org:5349?transport=tcp"
-                ],
-                username: data.username,
-                credential: data.credential
-            });
         } else {
             console.warn("TURN bilgileri alınamadı, sadece STUN ile devam ediliyor.");
         }
 
-        peerConnection = new RTCPeerConnection({ iceServers: iceServers });
+        peerConnection = new RTCPeerConnection({ 
+            iceServers, 
+            //iceTransportPolicy: 'relay'
+        });
 
         peerConnection.onicecandidate = (event) => {
             console.log("onicecandidate tetiklendi, candidate:", event.candidate);
@@ -73,7 +67,7 @@ async function initializeWebRTC() {
 
     } catch (error) {
         console.error("TURN sunucusu hazırlanamadı, STUN ile devam ediliyor:", error);
-        peerConnection = new RTCPeerConnection({ iceServers: [{ urls: "stun:furkanturn.duckdns.org:3478" }] });
+        peerConnection = new RTCPeerConnection({ iceServers: [] });
     }
 }
 
@@ -131,35 +125,100 @@ qualityControl.addEventListener("change", async (event) => {
     }
 });
 
-toggleVideoBtn.addEventListener("click", () => {
-    const stream = localVideo.srcObject;
-    if (stream) {
-        const videoTrack = stream.getVideoTracks()[0]
-        if (videoTrack) {
-            videoTrack.enabled = !videoTrack.enabled
-            if (videoTrack.enabled) {
-                toggleVideoBtn.textContent = "Kamerayı kapat";
-            }
-            else {
-                toggleVideoBtn.textContent = "Kamerayı aç";
+toggleVideoBtn.addEventListener("click", async () => {
+    // Zaten bir video track'imiz varsa (kamerayla katıldıysak), sadece aç/kapat.
+    const existingTrack = localStream && localStream.getVideoTracks()[0];
+    if (existingTrack) {
+        const turningOn = !existingTrack.enabled;
+        existingTrack.enabled = turningOn;
+        toggleVideoBtn.textContent = turningOn ? "Kamerayı kapat" : "Kamerayı aç";
+
+        // Sadece "enabled" değiştirmek bazı tarayıcılarda karşı tarafta
+        // görüntünün donuk/siyah kalmasına sebep oluyor. Bunu önlemek için
+        // gönderilen track'i de null <-> gerçek track olarak değiştiriyoruz;
+        // bu karşı tarafta görüntünün gerçekten tazelenmesini sağlıyor.
+        if (videoSender) {
+            try {
+                await videoSender.replaceTrack(turningOn ? existingTrack : null);
+            } catch (err) {
+                console.error("Video track değiştirilemedi:", err);
             }
         }
+        return;
+    }
+
+    // Kamerayla katılmadıysak: şimdi izin isteyip görüşmeye ekle.
+    if (isScreenSharing) return; // ekran paylaşırken kamerayı sonradan eklemeyelim
+
+    try {
+        toggleVideoBtn.disabled = true;
+        const camStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        const videoTrack = camStream.getVideoTracks()[0];
+
+        if (!localStream) {
+            localStream = new MediaStream();
+        }
+        localStream.addTrack(videoTrack);
+        localVideo.srcObject = localStream;
+
+        await rtcReady;
+        videoSender = peerConnection.addTrack(videoTrack, localStream);
+        const parameters = videoSender.getParameters();
+        if (!parameters.encodings) parameters.encodings = [{}];
+        parameters.encodings[0].maxBitrate = 500 * 1000;
+        await videoSender.setParameters(parameters);
+
+        await renegotiate();
+
+        toggleVideoBtn.textContent = "Kamerayı kapat";
+    } catch (err) {
+        console.error("Kamera sonradan açılamadı:", err);
+        alert("Kameraya erişim sağlanamadı. Tarayıcı izinlerini kontrol edin.");
+    } finally {
+        toggleVideoBtn.disabled = false;
     }
 })
 
-toggleMicBtn.addEventListener("click", () => {
-    const stream = localVideo.srcObject;
-    if (stream) {
-        const audioTrack = stream.getAudioTracks()[0]
-        if (audioTrack) {
-            audioTrack.enabled = !audioTrack.enabled
-            if (audioTrack.enabled) {
-                toggleMicBtn.textContent = "Mikrofunu kapat";
-            }
-            else {
-                toggleMicBtn.textContent = "Mikrofonu aç";
-            }
+toggleMicBtn.addEventListener("click", async () => {
+    // Zaten bir ses track'imiz varsa (mikrofonla katıldıysak), sadece aç/kapat.
+    const existingTrack = localStream && localStream.getAudioTracks()[0];
+    if (existingTrack) {
+        existingTrack.enabled = !existingTrack.enabled;
+        toggleMicBtn.textContent = existingTrack.enabled ? "Mikrofunu kapat" : "Mikrofonu aç";
+        return;
+    }
+
+    // Mikrofonla katılmadıysak: şimdi izin isteyip görüşmeye ekle.
+    try {
+        toggleMicBtn.disabled = true;
+        const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const rawAudioTrack = micStream.getAudioTracks()[0];
+
+        // Ses seviyesi kontrolünün (gainNode) çalışması için, mikrofon
+        // kamerayla katılırken de olduğu gibi gainNode üzerinden geçiriliyor.
+        const micSource = audioContext.createMediaStreamSource(new MediaStream([rawAudioTrack]));
+        const destination = audioContext.createMediaStreamDestination();
+        micSource.connect(gainNode);
+        gainNode.connect(destination);
+        const processedAudioTrack = destination.stream.getAudioTracks()[0];
+
+        if (!localStream) {
+            localStream = new MediaStream();
         }
+        localStream.addTrack(rawAudioTrack);
+        localVideo.srcObject = localStream;
+
+        await rtcReady;
+        peerConnection.addTrack(processedAudioTrack, localStream);
+
+        await renegotiate();
+
+        toggleMicBtn.textContent = "Mikrofunu kapat";
+    } catch (err) {
+        console.error("Mikrofon sonradan açılamadı:", err);
+        alert("Mikrofona erişim sağlanamadı. Tarayıcı izinlerini kontrol edin.");
+    } finally {
+        toggleMicBtn.disabled = false;
     }
 })
 
@@ -172,18 +231,56 @@ if (!roomId) {
 }
 
 const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => {
-    console.log("Signaling server \'a bağlanıldı");
-    ws.send(JSON.stringify({ type: "join", room: roomId, payload: null }));
-}
 
-window.addEventListener('beforeunload', function () {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.close();
-    }
+// Kamera/mikrofon ve sinyal bağlantısı artık sayfa açılır açılmaz değil,
+// kullanıcı "Görüşmeye Katıl" butonuna bastığında başlatılıyor.
+let ws;
+let cameraReady;
+let intentionalClose = false;
+
+const preJoin = document.getElementById("preJoin");
+const callUI = document.getElementById("callUI");
+const joinCallBtn = document.getElementById("joinCallBtn");
+const joinWithVideo = document.getElementById("joinWithVideo");
+const joinWithAudio = document.getElementById("joinWithAudio");
+
+joinCallBtn.addEventListener("click", async () => {
+    joinCallBtn.disabled = true;
+    statusMessage.textContent = "Kamera/mikrofon erişimi isteniyor...";
+
+    cameraReady = startCamera(joinWithVideo.checked, joinWithAudio.checked);
+    await cameraReady;
+
+    preJoin.style.display = "none";
+    callUI.style.display = "block";
+    statusMessage.textContent = "";
+
+    toggleVideoBtn.textContent = joinWithVideo.checked ? "Kamerayı kapat" : "Kamerayı aç";
+    toggleMicBtn.textContent = joinWithAudio.checked ? "Mikrofunu kapat" : "Mikrofonu aç";
+
+    connectSignaling();
 });
 
-ws.onmessage = async (event) => {
+function connectSignaling() {
+    ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+
+    ws.onopen = () => {
+        console.log("Signaling server \'a bağlanıldı");
+        ws.send(JSON.stringify({ type: "join", room: roomId, payload: null }));
+    };
+
+    window.addEventListener('beforeunload', function () {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.close();
+        }
+    });
+
+    ws.onmessage = handleSignalingMessage;
+    ws.onerror = handleSignalingError;
+    ws.onclose = handleSignalingClose;
+}
+
+async function handleSignalingMessage(event) {
     const msg = JSON.parse(event.data);
     console.log("Mesaj alındı,tip:", msg.type);
 
@@ -228,6 +325,14 @@ ws.onmessage = async (event) => {
         intentionalClose = true;
         ws.close();
     }
+    else if (msg.type === "room-not-found") {
+        statusMessage.textContent = "Bu oda geçersiz veya artık kullanılamıyor. Ana sayfaya yönlendiriliyorsunuz...";
+        intentionalClose = true;
+        ws.close();
+        setTimeout(() => {
+            window.location.href = "/";
+        }, 3000);
+    }
     else if (msg.type === "chat") {
         appendChatMessage(msg.payload, false);
     }
@@ -238,21 +343,26 @@ ws.onmessage = async (event) => {
             typingIndicator.textContent = "";
         }, 3000);
     }
-};
+}
 
-ws.onerror = (err) => {
+function handleSignalingError(err) {
     console.error("WebSocket hatası:", err);
     statusMessage.textContent = "Sunucuya bağlanamadı.Lütfen sunucunun çalıştığından emin olun."
-};
+}
 
-let intentionalClose = false;
-
-ws.onclose = () => {
+function handleSignalingClose() {
     console.log("Bağlantı kapandı");
     if (!intentionalClose) {
         statusMessage.textContent = "Sunucu bağlantısı kesildi.";
     }
-};
+}
+
+// Görüşme zaten başladıktan sonra kamera/mikrofon eklendiğinde,
+// karşı tarafla yeniden anlaşmak (renegotiation) için yeni bir offer gönderiyoruz.
+async function renegotiate() {
+    await rtcReady;
+    await createAndSendOffer();
+}
 
 async function createAndSendOffer() {
     console.log("createAndSendOffer çalışıyor, mevcut sender sayısı:", peerConnection.getSenders().length);
@@ -267,27 +377,35 @@ async function createAndSendOffer() {
     }));
 }
 
-async function startCamera() {
+async function startCamera(withVideo = true, withAudio = true) {
+    if (!withVideo && !withAudio) {
+        console.log("Kamera/mikrofon istenmeden katılınıyor.");
+        return;
+    }
     try {
         const stream = await navigator.mediaDevices.getUserMedia({
-            video: true,
-            audio: true
+            video: withVideo,
+            audio: withAudio
         });
         localStream = stream;
         localVideo.srcObject = stream;
 
-        const micSource = audioContext.createMediaStreamSource(stream);
-        const destination = audioContext.createMediaStreamDestination();
-        micSource.connect(gainNode);
-        gainNode.connect(destination);
-        const processAudioTrack = destination.stream.getAudioTracks()[0];
+        let processAudioTrack = null;
+        if (stream.getAudioTracks().length > 0) {
+            const micSource = audioContext.createMediaStreamSource(stream);
+            const destination = audioContext.createMediaStreamDestination();
+            micSource.connect(gainNode);
+            gainNode.connect(destination);
+            processAudioTrack = destination.stream.getAudioTracks()[0];
+        }
 
         await rtcReady;
 
         for (const track of stream.getTracks()) {
-            const trackToSend = track.kind === "audio" ? processAudioTrack : track;
+            const trackToSend = track.kind === "audio" ? (processAudioTrack || track) : track;
             const sender = peerConnection.addTrack(trackToSend, stream)
             if (track.kind === "video") {
+                videoSender = sender;
                 const parameters = sender.getParameters();
                 if (!parameters.encodings) {
                     parameters.encodings = [{}]
@@ -303,13 +421,12 @@ async function startCamera() {
     }
 }
 
-const cameraReady = startCamera();
-
 let isScreenSharing = false;
 let screenStream = null;
 
 toggleScreenBtn.addEventListener("click", async () => {
     if (!isScreenSharing) {
+
         await startScreenShare();
     } else {
         await stopScreenShare();
@@ -322,9 +439,12 @@ async function startScreenShare() {
         const screenTrack = screenStream.getVideoTracks()[0];
 
         await rtcReady;
-        const videoSender = peerConnection.getSenders().find(s => s.track && s.track.kind === "video")
         if (videoSender) {
+            // Kamera o an kapalıysa (track null) bile aynı sender'ı kullanıyoruz.
             await videoSender.replaceTrack(screenTrack);
+        } else {
+            videoSender = peerConnection.addTrack(screenTrack);
+            await renegotiate();
         }
         localVideo.srcObject = screenStream;
         screenTrack.onended = () => {
@@ -341,15 +461,14 @@ async function startScreenShare() {
 async function stopScreenShare() {
     if (!isScreenSharing) return;
 
-    const cameraTrack = localStream.getVideoTracks()[0]
+    const cameraTrack = localStream && localStream.getVideoTracks()[0];
+    // Kamera kapalıyken ekran paylaşımına başlandıysa, kamera track'i "enabled"
+    // durumuna göre geri veriyoruz (kapalıysa null, açıksa gerçek track).
+    const trackToRestore = cameraTrack && cameraTrack.enabled ? cameraTrack : null;
 
     await rtcReady;
-    const videoSender = peerConnection.getSenders().find(
-        s => s.track && s.track.kind === "video"
-    )
-
-    if (videoSender && cameraTrack) {
-        await videoSender.replaceTrack(cameraTrack);
+    if (videoSender) {
+        await videoSender.replaceTrack(trackToRestore);
     }
 
     if (screenStream) {
@@ -367,12 +486,12 @@ let mediaRecorder;
 let recordWs;
 let isRecording = false;
 
-const recordWsUrl = "wss://furkanturn.duckdns.org/api/record";
-
 async function startLiveRecording(stream) {
     const res = await fetch(`/api/record-token?room=${encodeURIComponent(roomId)}`);
     const { token } = await res.json();
-    recordWs = new WebSocket(`wss://furkanturn.duckdns.org/api/record?token=${encodeURIComponent(token)}`);
+
+    const wsUrl = `${wsProtocol}//${window.location.host}/api/record?token=${encodeURIComponent(token)}`;
+    recordWs = new WebSocket(wsUrl);
 
     recordWs.onopen = () => {
         console.log("Kayıt sunucusuna bağlanıldı.");
@@ -571,7 +690,7 @@ chatFileInput.addEventListener("change", async () => {
         const formData = new FormData();
         formData.append("file", file);
 
-        const res = await fetch(`https://furkanturn.duckdns.org/api/upload?token=${encodeURIComponent(token)}`, {
+        const res = await fetch(`/api/upload?token=${encodeURIComponent(token)}`, {
             method: "POST",
             body: formData
         });
@@ -582,11 +701,9 @@ chatFileInput.addEventListener("change", async () => {
             return;
         }
 
-        const fullFileUrl = `https://furkanturn.duckdns.org${data.url}`;
-
         const payload = {
             kind: "file",
-            fileUrl: fullFileUrl,
+            fileUrl: data.url,
             fileName: data.fileName,
             fileType: data.fileType,
             name: myName

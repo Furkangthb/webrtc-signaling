@@ -12,6 +12,12 @@
 # Environment variables
 .env
 
+# Local/runtime artifacts
+tmp/
+kayitlar/
+webrtc-app
+public/uploads/
+
 # IDE and OS Files
 .idea/
 .vscode/

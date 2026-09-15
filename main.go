@@ -32,19 +32,87 @@ type Message struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
+type appConfig struct {
+	listenAddr     string
+	publicHost     string
+	publicOrigin   string
+	cookieDomain   string
+	cookieSecure   bool
+	allowedOrigins map[string]bool
+}
+
+var cfg appConfig
+
+func envOr(key, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func loadConfig() {
+	cfg.listenAddr = envOr("LISTEN_ADDR", "0.0.0.0:8080")
+	cfg.publicHost = strings.TrimSpace(os.Getenv("PUBLIC_HOST"))
+	cfg.publicOrigin = strings.TrimRight(strings.TrimSpace(os.Getenv("PUBLIC_ORIGIN")), "/")
+	if cfg.publicOrigin == "" && cfg.publicHost != "" {
+		cfg.publicOrigin = "https://" + cfg.publicHost
+	}
+	if cfg.publicHost == "" && cfg.publicOrigin != "" {
+		cfg.publicHost = strings.TrimPrefix(strings.TrimPrefix(cfg.publicOrigin, "https://"), "http://")
+		if host, _, ok := strings.Cut(cfg.publicHost, "/"); ok {
+			cfg.publicHost = host
+		}
+	}
+	cfg.cookieDomain = strings.TrimSpace(os.Getenv("COOKIE_DOMAIN"))
+	switch strings.ToLower(os.Getenv("COOKIE_SECURE")) {
+	case "true", "1", "yes":
+		cfg.cookieSecure = true
+	case "false", "0", "no":
+		cfg.cookieSecure = false
+	default:
+		cfg.cookieSecure = cfg.cookieDomain != "" || strings.HasPrefix(cfg.publicOrigin, "https://")
+	}
+
+	cfg.allowedOrigins = map[string]bool{
+		"http://localhost:8080": true,
+		"http://127.0.0.1:8080": true,
+	}
+	if cfg.publicOrigin != "" {
+		cfg.allowedOrigins[cfg.publicOrigin] = true
+	}
+	for _, origin := range strings.Split(os.Getenv("ALLOWED_ORIGIN"), ",") {
+		origin = strings.TrimSpace(origin)
+		if origin != "" {
+			cfg.allowedOrigins[origin] = true
+		}
+	}
+}
+
+func originAllowed(origin string) bool {
+	if origin == "" {
+		return true
+	}
+	return cfg.allowedOrigins[origin]
+}
+
+func applyCookieDefaults(c *http.Cookie) {
+	if c.Path == "" {
+		c.Path = "/"
+	}
+	c.HttpOnly = true
+	c.Secure = cfg.cookieSecure
+	c.SameSite = http.SameSiteLaxMode
+	if cfg.cookieDomain != "" {
+		c.Domain = cfg.cookieDomain
+	}
+}
+
 var upgrade = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
-
-		if origin == "" || origin == "http://localhost:8080" || origin == "http://127.0.0.1:8080" || origin == "https://webrtc-signaling-kjw9.onrender.com" {
+		if originAllowed(origin) {
 			return true
 		}
-
-		allowedOrigin := os.Getenv("ALLOWED_ORIGIN")
-		if allowedOrigin != "" && origin == allowedOrigin {
-			return true
-		}
-
 		fmt.Println("Reddedilen bağlantı denemesi (Origin):", origin)
 		return false
 	},
@@ -54,6 +122,62 @@ var mutex sync.Mutex
 
 var roomSessions = make(map[string]string)
 var sessionMutex sync.Mutex
+
+var validRooms = make(map[string]bool)
+var validRoomsMutex sync.Mutex
+
+func registerValidRoom(room string) {
+	validRoomsMutex.Lock()
+	defer validRoomsMutex.Unlock()
+	validRooms[room] = true
+}
+
+func isValidRoom(room string) bool {
+	validRoomsMutex.Lock()
+	defer validRoomsMutex.Unlock()
+	return validRooms[room]
+}
+
+func invalidateRoom(room string) {
+	validRoomsMutex.Lock()
+	defer validRoomsMutex.Unlock()
+	delete(validRooms, room)
+}
+
+const roomGracePeriod = 30 * time.Second
+
+var pendingRoomCleanup = make(map[string]*time.Timer)
+var pendingCleanupMutex sync.Mutex
+
+func scheduleRoomCleanup(room string) {
+	pendingCleanupMutex.Lock()
+	defer pendingCleanupMutex.Unlock()
+	if existing, ok := pendingRoomCleanup[room]; ok {
+		existing.Stop()
+	}
+	pendingRoomCleanup[room] = time.AfterFunc(roomGracePeriod, func() {
+		mutex.Lock()
+		stillEmpty := len(rooms[room]) == 0
+		mutex.Unlock()
+		if stillEmpty {
+			clearSessionID(room)
+			invalidateRoom(room)
+			fmt.Println("Oda tolerans süresi doldu, geçersiz kılındı:", room)
+		}
+		pendingCleanupMutex.Lock()
+		delete(pendingRoomCleanup, room)
+		pendingCleanupMutex.Unlock()
+	})
+}
+
+func cancelRoomCleanup(room string) {
+	pendingCleanupMutex.Lock()
+	defer pendingCleanupMutex.Unlock()
+	if existing, ok := pendingRoomCleanup[room]; ok {
+		existing.Stop()
+		delete(pendingRoomCleanup, room)
+	}
+}
 
 func getOrCreateSessionID(room string) string {
 	sessionMutex.Lock()
@@ -89,19 +213,20 @@ func sign(payload string) string {
 }
 
 func createSessionCookie(w http.ResponseWriter, data SessionData) {
-	data.Exp = time.Now().Add(7 * 24 * time.Hour).Unix()
+	expiration := time.Now().Add(7 * 24 * time.Hour)
+	data.Exp = expiration.Unix()
 	raw, _ := json.Marshal(data)
 	encoded := base64.URLEncoding.EncodeToString(raw)
 	value := encoded + "." + sign(encoded)
 
-	http.SetCookie(w, &http.Cookie{
-		Name:     "session",
-		Value:    value,
-		Path:     "/",
-		MaxAge:   7 * 24 * 3600,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
+	cookie := &http.Cookie{
+		Name:    "session",
+		Value:   value,
+		Expires: expiration,
+		MaxAge:  7 * 24 * 3600,
+	}
+	applyCookieDefaults(cookie)
+	http.SetCookie(w, cookie)
 }
 
 func getSession(r *http.Request) (*SessionData, bool) {
@@ -144,13 +269,15 @@ func randomToken(n int) string {
 
 func googleLoginHandler(w http.ResponseWriter, r *http.Request) {
 	state := randomToken(16)
-	http.SetCookie(w, &http.Cookie{
-		Name:     "oauth_state",
-		Value:    state,
-		Path:     "/",
-		MaxAge:   600,
-		HttpOnly: true,
-	})
+	expiration := time.Now().Add(10 * time.Minute)
+	cookie := &http.Cookie{
+		Name:    "oauth_state",
+		Value:   state,
+		Expires: expiration,
+		MaxAge:  600,
+	}
+	applyCookieDefaults(cookie)
+	http.SetCookie(w, cookie)
 	http.Redirect(w, r, googleOauthConfig.AuthCodeURL(state), http.StatusTemporaryRedirect)
 }
 
@@ -162,7 +289,12 @@ type googleUserInfo struct {
 
 func googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	stateCookie, err := r.Cookie("oauth_state")
-	if err != nil || r.URL.Query().Get("state") != stateCookie.Value {
+	if err != nil {
+		http.Error(w, "OAuth state çerezi bulunamadı. Tarayıcı çerezleri engelliyor olabilir.", http.StatusBadRequest)
+		return
+	}
+	queryState := r.URL.Query().Get("state")
+	if queryState == "" || queryState != stateCookie.Value {
 		http.Error(w, "Geçersiz state parametresi", http.StatusBadRequest)
 		return
 	}
@@ -205,7 +337,9 @@ func googleCallbackHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func logoutHandler(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{Name: "session", Value: "", Path: "/", MaxAge: -1})
+	cookie := &http.Cookie{Name: "session", Value: "", MaxAge: -1, Expires: time.Unix(0, 0)}
+	applyCookieDefaults(cookie)
+	http.SetCookie(w, cookie)
 	http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 }
 
@@ -234,11 +368,109 @@ func createRoomHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	roomId := hex.EncodeToString([]byte(randomToken(6)))[:12]
+	registerValidRoom(roomId)
 
 	json.NewEncoder(w).Encode(map[string]string{
 		"room":     roomId,
 		"hostName": session.Name,
 	})
+}
+
+type wsClient struct {
+	conn        *websocket.Conn
+	identity    string
+	displayName string
+	currentRoom string
+	joinedRoom  bool
+}
+
+func (c *wsClient) handleDisconnect() {
+	if !c.joinedRoom {
+		return
+	}
+	msg := Message{Type: "peer-left", Room: c.currentRoom, Payload: nil}
+	peerLeftPayload, marshalErr := json.Marshal(msg)
+	if marshalErr == nil {
+		broadcastToRoom(c.currentRoom, c.conn, peerLeftPayload)
+	}
+	removeFromRoom(c.currentRoom, c.conn)
+	c.joinedRoom = false
+
+	mutex.Lock()
+	remaining := len(rooms[c.currentRoom])
+	mutex.Unlock()
+	if remaining == 0 {
+		scheduleRoomCleanup(c.currentRoom)
+	}
+}
+
+func (c *wsClient) handleJoin(msg Message) {
+	if !isValidRoom(msg.Room) {
+		invalidMessage := Message{Type: "room-not-found", Room: msg.Room, Payload: nil}
+		invalidPayload, err := json.Marshal(invalidMessage)
+		if err == nil {
+			c.conn.WriteMessage(websocket.TextMessage, invalidPayload)
+		}
+		fmt.Println("Geçersiz oda ile katılma denemesi:", msg.Room)
+		return
+	}
+
+	c.currentRoom = msg.Room
+	cancelRoomCleanup(c.currentRoom)
+
+	sessionId := getOrCreateSessionID(c.currentRoom)
+	sessionInfo := struct {
+		Type      string `json:"type"`
+		Room      string `json:"room"`
+		SessionId string `json:"sessionId"`
+	}{Type: "session-info", Room: c.currentRoom, SessionId: sessionId}
+	if sessionInfoPayload, err := json.Marshal(sessionInfo); err == nil {
+		c.conn.WriteMessage(websocket.TextMessage, sessionInfoPayload)
+	}
+
+	mutex.Lock()
+	roomSize := len(rooms[c.currentRoom])
+
+	if roomSize >= 2 {
+		mutex.Unlock()
+		fullMessage := Message{Type: "room-full", Room: c.currentRoom, Payload: nil}
+		fullPayload, err := json.Marshal(fullMessage)
+		if err == nil {
+			c.conn.WriteMessage(websocket.TextMessage, fullPayload)
+		}
+		return
+	}
+
+	if roomSize == 1 {
+		readyMessage := Message{Type: "ready", Room: c.currentRoom, Payload: nil}
+		readyPayload, err := json.Marshal(readyMessage)
+		if err == nil {
+			c.conn.WriteMessage(websocket.TextMessage, readyPayload)
+		}
+	}
+
+	rooms[c.currentRoom] = append(rooms[c.currentRoom], c.conn)
+	c.joinedRoom = true
+	mutex.Unlock()
+	fmt.Println("Client odaya katıldı", c.currentRoom)
+}
+
+func (c *wsClient) handleChat(msg Message) {
+	var chatPayload struct {
+		Kind     string `json:"kind"`
+		Text     string `json:"text"`
+		FileName string `json:"fileName"`
+		FileUrl  string `json:"fileUrl"`
+		Name     string `json:"name"`
+	}
+	if err := json.Unmarshal(msg.Payload, &chatPayload); err == nil {
+		content := chatPayload.Text
+		if chatPayload.Kind == "file" {
+			content = fmt.Sprintf("[Dosya] %s (%s)", chatPayload.FileName, chatPayload.FileUrl)
+		}
+		sessionId := getOrCreateSessionID(msg.Room)
+		forwardChatLog(msg.Room, sessionId, c.identity, c.displayName, content)
+	}
 }
 
 func wsHandler(w http.ResponseWriter, r *http.Request) {
@@ -259,29 +491,13 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	var currentRoom string
-	joinedRoom := false
+	client := &wsClient{conn: conn, identity: identity, displayName: displayName}
 
 	for {
 		_, rawMessage, err := conn.ReadMessage()
 		if err != nil {
 			fmt.Println("Client ayrıldı", err)
-			if joinedRoom {
-				msg := Message{Type: "peer-left", Room: currentRoom, Payload: nil}
-				peerLeftPayload, marshalErr := json.Marshal(msg)
-				if marshalErr == nil {
-					broadcastToRoom(currentRoom, conn, peerLeftPayload)
-				}
-				removeFromRoom(currentRoom, conn)
-				joinedRoom = false
-
-				mutex.Lock()
-				remaining := len(rooms[currentRoom])
-				mutex.Unlock()
-				if remaining == 0 {
-					clearSessionID(currentRoom)
-				}
-			}
+			client.handleDisconnect()
 			break
 		}
 
@@ -293,65 +509,14 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if msg.Type == "join" {
-			currentRoom = msg.Room
-
-			sessionId := getOrCreateSessionID(currentRoom)
-			sessionInfo := struct {
-				Type      string `json:"type"`
-				Room      string `json:"room"`
-				SessionId string `json:"sessionId"`
-			}{Type: "session-info", Room: currentRoom, SessionId: sessionId}
-			if sessionInfoPayload, err := json.Marshal(sessionInfo); err == nil {
-				conn.WriteMessage(websocket.TextMessage, sessionInfoPayload)
-			}
-
-			mutex.Lock()
-			roomSize := len(rooms[currentRoom])
-
-			if roomSize >= 2 {
-				mutex.Unlock()
-				fullMessage := Message{Type: "room-full", Room: currentRoom, Payload: nil}
-				fullPayload, err := json.Marshal(fullMessage)
-				if err == nil {
-					conn.WriteMessage(websocket.TextMessage, fullPayload)
-				}
-				continue
-			}
-
-			if roomSize == 1 {
-				readyMessage := Message{Type: "ready", Room: currentRoom, Payload: nil}
-				readyPayload, err := json.Marshal(readyMessage)
-				if err == nil {
-					conn.WriteMessage(websocket.TextMessage, readyPayload)
-				}
-			}
-
-			rooms[currentRoom] = append(rooms[currentRoom], conn)
-			joinedRoom = true
-			mutex.Unlock()
-			fmt.Println("Client odaya katıldı", currentRoom)
+			client.handleJoin(msg)
 			continue
 		}
 		if msg.Type == "chat" {
-			var chatPayload struct {
-				Kind     string `json:"kind"`
-				Text     string `json:"text"`
-				FileName string `json:"fileName"`
-				FileUrl  string `json:"fileUrl"`
-				Name     string `json:"name"`
-			}
-			if err := json.Unmarshal(msg.Payload, &chatPayload); err == nil {
-				content := chatPayload.Text
-				if chatPayload.Kind == "file" {
-					content = fmt.Sprintf("[Dosya] %s (%s)", chatPayload.FileName, chatPayload.FileUrl)
-				}
-				sessionId := getOrCreateSessionID(msg.Room)
-				forwardChatLog(msg.Room, sessionId, identity, displayName, content)
-			}
+			client.handleChat(msg)
 		}
 
-		broadcastToRoom(currentRoom, conn, rawMessage)
-
+		broadcastToRoom(client.currentRoom, conn, rawMessage)
 	}
 }
 
@@ -470,45 +635,7 @@ func generateTurnCredentials(secret string, ttlSeconds int) (string, string) {
 	return username, password
 }
 
-func recordHandler(w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrade.Upgrade(w, r, nil)
-	if err != nil {
-		fmt.Println("Kayıt için Upgrade hatası:", err)
-		return
-	}
-	defer conn.Close()
-
-	os.MkdirAll("kayitlar", os.ModePerm)
-
-	fileName := fmt.Sprintf("kayitlar/gorusme_%d.webm", time.Now().Unix())
-
-	file, err := os.OpenFile(fileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		fmt.Println("Dosya açılamadı:", err)
-		return
-	}
-	defer file.Close()
-
-	fmt.Println("🎥 Yeni kayıt akışı başladı. Dosya:", fileName)
-
-	for {
-		messageType, message, err := conn.ReadMessage()
-		if err != nil {
-			fmt.Println("Kayıt bağlantısı koptu veya tamamlandı:", err)
-			break
-		}
-
-		if messageType == websocket.BinaryMessage {
-			_, err := file.Write(message)
-			if err != nil {
-				fmt.Println("Dosyaya yazma hatası:", err)
-				break
-			}
-		}
-	}
-}
-
-const maxUploadSize = 10 << 20 // 10 MB
+const maxUploadSize = 10 << 20 
 
 func randomFileToken(n int) string {
 	b := make([]byte, n)
@@ -649,45 +776,76 @@ func recordTokenHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func iceServersPayload(username, credential string) []map[string]interface{} {
+	host := cfg.publicHost
+	if host == "" {
+		host = "localhost"
+	}
+	servers := []map[string]interface{}{
+		{"urls": []string{fmt.Sprintf("stun:%s:3478", host)}},
+	}
+	if username == "" || credential == "" {
+		return servers
+	}
+	servers = append(servers, map[string]interface{}{
+		"urls": []string{
+			fmt.Sprintf("turn:%s:3478?transport=udp", host),
+			fmt.Sprintf("turn:%s:3478?transport=tcp", host),
+			fmt.Sprintf("turns:%s:5349?transport=tcp", host),
+		},
+		"username":   username,
+		"credential": credential,
+	})
+	return servers
+}
+
 func turnCredentialsHandler(w http.ResponseWriter, r *http.Request) {
 	origin := r.Header.Get("Origin")
-	allowedOrigin := os.Getenv("ALLOWED_ORIGIN")
-
-	if origin != "" && origin != "http://localhost:8080" && origin != "http://127.0.0.1:8080" {
-		if allowedOrigin == "" || origin != allowedOrigin {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte(`{"success": false, "error": "Yetkisiz origin"}`))
-			return
-		}
+	if origin != "" && !originAllowed(origin) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"success": false, "error": "Yetkisiz origin"}`))
+		return
 	}
 
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Vary", "Origin")
+	}
 	w.Header().Set("Content-Type", "application/json")
 
 	turnSecret := os.Getenv("TURN_SECRET")
 	if turnSecret == "" {
 		fmt.Println("HATA: TURN_SECRET ortam değişkeni bulunamadı!")
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"success": false, "error": "Sunucu yapılandırma hatası"}`))
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":    false,
+			"error":      "Sunucu yapılandırma hatası",
+			"iceServers": iceServersPayload("", ""),
+		})
 		return
 	}
 
 	username, password := generateTurnCredentials(turnSecret, 86400)
-
-	response := map[string]interface{}{
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success":    true,
 		"username":   username,
 		"credential": password,
-	}
+		"iceServers": iceServersPayload(username, password),
+	})
+}
 
-	json.NewEncoder(w).Encode(response)
+func healthzHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("ok"))
 }
 
 func main() {
 	if err := godotenv.Load(); err != nil {
 		fmt.Println("Uyarı: .env dosyası yüklenemedi (varsayılan ortam değişkenleri kullanılacak):", err)
 	}
+	loadConfig()
 
 	googleOauthConfig = &oauth2.Config{
 		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
@@ -702,23 +860,32 @@ func main() {
 
 	fmt.Println("GOOGLE_CLIENT_ID yüklendi mi:", os.Getenv("GOOGLE_CLIENT_ID") != "")
 	fmt.Println("SESSION_SECRET yüklendi mi:", os.Getenv("SESSION_SECRET") != "")
+	fmt.Println("TURN_SECRET yüklendi mi:", os.Getenv("TURN_SECRET") != "")
+	fmt.Println("Dinleme adresi:", cfg.listenAddr)
 
-	fs := http.FileServer(http.Dir("./public"))
-	http.Handle("/", fs)
+	mux := http.NewServeMux()
+	mux.Handle("/", http.FileServer(http.Dir("./public")))
+	mux.HandleFunc("/healthz", healthzHandler)
+	mux.HandleFunc("/ws", wsHandler)
+	mux.HandleFunc("/api/turn-credentials", turnCredentialsHandler)
+	mux.HandleFunc("/api/record-token", recordTokenHandler)
+	mux.HandleFunc("/api/upload", uploadHandler)
+	mux.HandleFunc("/auth/google/login", googleLoginHandler)
+	mux.HandleFunc("/auth/google/callback", googleCallbackHandler)
+	mux.HandleFunc("/auth/logout", logoutHandler)
+	mux.HandleFunc("/api/me", meHandler)
+	mux.HandleFunc("/api/create-room", createRoomHandler)
 
-	http.HandleFunc("/ws", wsHandler)
-	http.HandleFunc("/api/turn-credentials", turnCredentialsHandler)
-	http.HandleFunc("/api/record-token", recordTokenHandler)
-	http.HandleFunc("/api/record", recordHandler)
-	http.HandleFunc("/api/upload", uploadHandler)
+	server := &http.Server{
+		Addr:              cfg.listenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 
-	http.HandleFunc("/auth/google/login", googleLoginHandler)
-	http.HandleFunc("/auth/google/callback", googleCallbackHandler)
-	http.HandleFunc("/auth/logout", logoutHandler)
-	http.HandleFunc("/api/me", meHandler)
-	http.HandleFunc("/api/create-room", createRoomHandler)
-
-	fmt.Println("Sunucu 8080 portunda baslatılıyor...")
-
-	http.ListenAndServe("0.0.0.0:8080", nil)
+	fmt.Println("Sunucu başlatılıyor:", cfg.listenAddr)
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		fmt.Println("Sunucu hatası:", err)
+		os.Exit(1)
+	}
 }
