@@ -1,70 +1,21 @@
-<!DOCTYPE html>
-<html lang="tr">
-
-<head>
-    <meta charset="UTF-8">
-    <title>WebRTC Görüşme</title>
-    <style>
-        body {
-            font-family: sans-serif;
-            max-width: 480px;
-            margin: 60px auto;
-            padding: 0 16px;
-        }
-
-        button {
-            padding: 10px 16px;
-            cursor: pointer;
-        }
-
-        input {
-            padding: 8px;
-            width: 100%;
-            box-sizing: border-box;
-            margin: 6px 0;
-        }
-
-        hr {
-            margin: 32px 0;
-        }
-
-        #loggedInSection {
-            display: none;
-        }
-    </style>
-</head>
-
-<body>
-    <h1>WebRTC Görüşme</h1>
-
-    <div id="loggedOutSection">
-        <h2>Oda Kurmak İçin Giriş Yap</h2>
-        <a href="/auth/google/login"><button>Google ile Giriş Yap</button></a>
-    </div>
-    <div id="loggedInSection">
-        <p id="welcomeText"></p>
-        <button id="createRoomBtn">Yeni Oda Kur</button>
-        <button id="logoutBtn">Çıkış Yap</button>
-
-        <div style="margin-top:16px;">
-            <label for="joinRoomInput">Var olan bir odaya katıl</label>
-            <input type="text" id="joinRoomInput" placeholder="Oda kodu ya da link yapıştır">
-            <button id="joinAsUserBtn">Odaya Katıl</button>
-        </div>
-    </div>
-
-    <hr>
-
-    <div>
-        <h2>Misafir Olarak Katıl </h2>
-        <label for="guestName">İsminiz</label>
-        <input type="text" id="guestName" placeholder="Adınız">
-        <label for="roomCodeInput">Oda Kodu veya Linki</label>
-        <input type="text" id="roomCodeInput" placeholder="Oda kodu ya da link yapıştır">
-        <button id="joinAsGuestBtn">Odaya Katıl</button>
-    </div>
-
-    <script src="home.js"></script>
-</body>
-
+<!doctype html>
+<html lang="en">
+  <head>
+    
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebRTC Goruntulu Konusma</title>
+    
+    <meta name="description" content="Enables secure video calls with screen sharing, recording, and chat features for seamless remote communication and collaboration.">
+    <meta name="robots" content="noindex, nofollow">
+    <meta property="og:title" content="WebRTC Goruntulu Konusma">
+    <meta property="og:description" content="Enables secure video calls with screen sharing, recording, and chat features for seamless remote communication and collaboration.">
+    <script type="module" crossorigin src="/assets/index-B88t0dtm.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-CSR98oHL.css">
+  </head>
+  <body>
+    
+    <div id="root"></div>
+    
+  </body>
 </html>
