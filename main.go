@@ -490,6 +490,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	conn.SetReadLimit(64 * 1024)
 
 	client := &wsClient{conn: conn, identity: identity, displayName: displayName}
 
@@ -635,7 +636,7 @@ func generateTurnCredentials(secret string, ttlSeconds int) (string, string) {
 	return username, password
 }
 
-const maxUploadSize = 10 << 20 
+const maxUploadSize = 10 << 20
 
 func randomFileToken(n int) string {
 	b := make([]byte, n)
@@ -656,20 +657,68 @@ func sanitizeForPath(s string) string {
 	return b.String()
 }
 
+func verifyRecordToken(token string) (*RecordTokenClaims, bool) {
+	logSecret := os.Getenv("LOG_SHARED_SECRET")
+	if logSecret == "" || token == "" {
+		return nil, false
+	}
+
+	parts := strings.SplitN(token, ".", 2)
+	if len(parts) != 2 {
+		return nil, false
+	}
+	encoded, signature := parts[0], parts[1]
+
+	mac := hmac.New(sha256.New, []byte(logSecret))
+	mac.Write([]byte(encoded))
+	expectedSig := hex.EncodeToString(mac.Sum(nil))
+
+	if !hmac.Equal([]byte(signature), []byte(expectedSig)) {
+		return nil, false
+	}
+
+	raw, err := base64.URLEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, false
+	}
+
+	var claims RecordTokenClaims
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		return nil, false
+	}
+
+	if time.Now().Unix() > claims.Exp {
+		return nil, false
+	}
+
+	return &claims, true
+}
+
+var allowedUploadMimeTypes = map[string]bool{
+	"image/jpeg":      true,
+	"image/png":       true,
+	"image/gif":       true,
+	"image/webp":      true,
+	"application/pdf": true,
+	"text/plain":      true,
+}
+
 func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+
+	token := r.URL.Query().Get("token")
+	claims, ok := verifyRecordToken(token)
+	if !ok {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Geçersiz veya süresi dolmuş token"})
+		return
+	}
+	room := claims.Room
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
 	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
 		w.WriteHeader(http.StatusRequestEntityTooLarge)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Dosya çok büyük (maksimum 10 MB)"})
-		return
-	}
-
-	room := r.FormValue("room")
-	if room == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Oda bilgisi eksik"})
 		return
 	}
 
@@ -680,6 +729,21 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
+
+	sniff := make([]byte, 512)
+	n, _ := file.Read(sniff)
+	detectedType := http.DetectContentType(sniff[:n])
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Dosya okunamadı"})
+		return
+	}
+
+	if !allowedUploadMimeTypes[detectedType] {
+		w.WriteHeader(http.StatusUnsupportedMediaType)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Desteklenmeyen dosya türü: " + detectedType})
+		return
+	}
 
 	safeRoom := sanitizeForPath(room)
 	uploadDir := filepath.Join("public", "uploads", safeRoom)
@@ -708,7 +772,7 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"url":      fileUrl,
 		"fileName": header.Filename,
-		"fileType": header.Header.Get("Content-Type"),
+		"fileType": detectedType,
 	})
 }
 
